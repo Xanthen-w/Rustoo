@@ -1,0 +1,31 @@
+# Strategy/portfolio parameters. Nothing here should be hard-coded in
+# src/strategy — everything tunable lives in this file so research can sweep
+# it without touching code.
+
+momentum:
+  lookback_periods: [24, 96, 288]  # in bars, whatever the bar interval is
+  ema_fast: 20
+  ema_slow: 60
+
+volatility:
+  lookback_periods: 96
+  target_annualized_vol: 0.20
+  periods_per_year: 8760  # hourly bars default; override per data source
+
+cross_sectional:
+  top_k: 3
+
+mean_reversion:
+  lookback_periods: 12
+  z_entry: 1.5
+
+portfolio:
+  max_asset_weight: 0.35
+  max_gross_exposure: 1.0
+  min_trade_threshold: 0.02   # do not trade if |target - current| below this
+  cash_weight_floor: 0.0
+
+risk:
+  drawdown_caution: 0.05
+  drawdown_defensive: 0.10
+  drawdown_emergency: 0.20

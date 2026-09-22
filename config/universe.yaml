@@ -1,0 +1,9 @@
+# The tradable universe is discovered dynamically from /v3/exchangeInfo at
+# runtime (src/data/universe.py). These lists only let research/ops override
+# that discovery — they are not a hard-coded universe.
+
+# Only ever trade these pairs, if non-empty (intersected with exchangeInfo).
+whitelist: []
+
+# Never trade these pairs, even if exchangeInfo lists them as tradable.
+blacklist: []

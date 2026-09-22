@@ -1,0 +1,110 @@
+# Roostoo Quant Trading Bot
+
+Autonomous quant trading system for the HK vs AU vs IN Quant Trading
+Hackathon (Roostoo × Susquehanna). Optimizes for the competition's actual
+scoring function:
+
+```
+Composite Score = 0.4 * Sortino + 0.3 * Sharpe + 0.3 * Calmar
+```
+
+— not raw return. See `backtest/metrics.py::composite_score`.
+
+## Status
+
+This repo is being built incrementally, in the order laid out below. Phases
+0–9 ("foundation") are done and tested; later phases (portfolio risk state
+machine, execution/reconciliation daemon, logging/monitoring, walk-forward
+validation, ML, AWS deployment) are not built yet — see the roadmap section.
+
+Verified against the **official** API docs
+([`roostoo/Roostoo-API-Documents`](https://github.com/roostoo/Roostoo-API-Documents))
+and live-smoke-tested against `https://mock-api.roostoo.com` — see
+`docs/API_NOTES.md` for everything that's confirmed vs. still an open
+question.
+
+## Setup
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+cp .env.example .env   # fill in ROOSTOO_API_KEY / ROOSTOO_API_SECRET once you have them
+```
+
+Run the tests:
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+Smoke-test the public API client (no credentials needed):
+
+```bash
+.venv/bin/python -c "
+from src.execution.client import PublicMarketDataClient
+c = PublicMarketDataClient()
+print(c.get_server_time())
+print(list(c.get_exchange_info()['TradePairs'].keys())[:5])
+"
+```
+
+## Architecture
+
+```
+docs/API_NOTES.md        - what's verified about the Roostoo API vs. assumed
+config/                  - non-secret config: fees, universe filters, strategy params
+src/config/settings.py   - env vars + config.yaml; hard gate on live trading
+src/execution/client.py  - PublicMarketDataClient / PrivateTradingClient (signed HMAC)
+src/data/market_data.py  - normalized Ticker type + pluggable HistoricalDataSource
+src/data/universe.py     - tradable universe + precision/min-notional rules, from exchangeInfo
+src/data/roostoo_data.py - live feed wrapper + TickerBarBuilder (self-collected OHLCV)
+src/features/            - momentum, trend, volatility, volume, cross-sectional (all causal)
+src/strategy/signals.py  - baseline strategies -> target weights (long-only, no leverage)
+src/strategy/portfolio.py- vol-scaled weighting, constraints, rebalance-threshold hysteresis
+backtest/engine.py       - chronological multi-asset sim with an enforced execution lag
+backtest/costs.py        - maker/taker fee + slippage model, optimistic/base/pessimistic
+backtest/metrics.py      - Sharpe/Sortino/Calmar/drawdown/turnover/composite score
+tests/                   - incl. a live signature check against the doc's worked example,
+                            and look-ahead-bias regression tests for every baseline strategy
+```
+
+Strategy code (`src/strategy`, `src/features`) never imports the API client —
+it only ever sees normalized `pandas` data, so every strategy is testable and
+backtestable without touching the network.
+
+### Look-ahead safety
+
+Two independent guards:
+
+1. Every feature/strategy function is causal by construction (rolling/ewm
+   windows only), and `tests/test_lookahead.py` proves it empirically: it
+   mutates the *future* tail of a price series and asserts each strategy's
+   past output doesn't change.
+2. `backtest.BacktestEngine` refuses `execution_lag < 1` — a signal computed
+   from data through bar `t` is only ever filled at bar `t + execution_lag`,
+   never at bar `t`'s own price.
+
+### No historical OHLCV from Roostoo
+
+Roostoo's API has no historical-candle endpoint — only a live ticker
+snapshot (`/v3/ticker`). `src/data/market_data.py::HistoricalDataSource` is a
+pluggable interface for whatever historical data source research ends up
+using; `src/data/roostoo_data.py::TickerBarBuilder` lets the live bot start
+building its own bars from repeated polling, since Roostoo can't hand us
+history retroactively. See `docs/API_NOTES.md` open question #2.
+
+## Roadmap (not yet built)
+
+- Phase 10–13: rule-based market regime model, full risk engine (drawdown
+  state machine: NORMAL → CAUTION → DEFENSIVE → EMERGENCY), correlation-aware
+  portfolio construction.
+- Phase 15–18: order execution engine (submit → confirm fill → reconcile),
+  position reconciliation against Roostoo's actual account state, structured
+  rotating logs, a persisted performance database (SQLite).
+- Phase 20–25: YAML-driven parameter sweeps, walk-forward validation,
+  parameter robustness/ablation studies, stress tests, Monte Carlo
+  robustness diagnostics.
+- Phase 26: ML/regime classification, only after the rule-based baseline
+  above is validated.
+- `deployment/`: systemd unit + AWS EC2 bring-up, `src/main.py` continuous
+  run loop wiring all of the above together.

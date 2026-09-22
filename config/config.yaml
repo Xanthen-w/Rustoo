@@ -1,0 +1,31 @@
+# Non-secret configuration. Secrets (API keys) come only from environment
+# variables / .env — never put them here.
+
+roostoo:
+  base_url: "https://mock-api.roostoo.com"
+  request_timeout_seconds: 10
+  max_retries: 4
+  backoff_base_seconds: 0.5
+  backoff_max_seconds: 20
+  clock_skew_tolerance_ms: 60000
+  # servers reject a request if |serverTime - our timestamp| > this
+
+execution:
+  # Competition rule: no HFT. Enforced client-side as a hard floor regardless
+  # of what a strategy asks for.
+  min_seconds_between_orders: 60
+  allow_cancel_all_without_filter: false
+  allow_shorting: false  # see docs/API_NOTES.md open question #1
+
+costs:
+  # Hackathon-stated fee schedule. The live client always uses the exchange's
+  # own reported CommissionChargeValue; these are backtest-only defaults.
+  taker_fee: 0.0010
+  maker_fee: 0.0005
+  slippage_bps: 5
+  short_open_fee: 0.0010
+  short_close_fee: 0.0010
+
+logging:
+  level: INFO
+  dir: "logs"
