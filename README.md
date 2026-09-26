@@ -195,6 +195,7 @@ split's own window is scored.
 .venv/bin/python scripts/walk_forward.py --split train           # walk-forward search over config/research.yaml grids
 .venv/bin/python scripts/window_analysis.py --split train        # every 14-day window from cash (the competition horizon)
 .venv/bin/python scripts/backtest_report.py --split validation   # full HTML report + CSV/JSON exports for the live strategy
+.venv/bin/python scripts/robustness_report.py --split validation # costs, stress, Monte Carlo, regimes, parameter landscapes, random entry
 ```
 
 `scripts/backtest_report.py` writes `research/experiments/reports/<run>/report.html`: a single

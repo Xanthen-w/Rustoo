@@ -11,7 +11,7 @@ ranked by return and then `0.4·Sortino + 0.3·Sharpe + 0.3·Calmar`.
 |---|---|---|
 | 1 | Explicit execution timing (next-bar open/close, latency); itemised costs (fee, spread, slippage, market impact); gross vs net P&L with reconciliation tests; fills ledger with participation; engine-level causality test; walk-forward leakage test | **done** |
 | 2 | Full metrics (drawdown episodes and recovery, VaR/CVaR, monthly returns, rolling Sharpe/vol, exposure, FIFO trade table and stats); benchmarks + random-entry baseline; self-contained HTML report with interactive charts + JSON/CSV export | **done** |
-| 3 | Cost/slippage sensitivity, stress scenarios and worst case; Monte Carlo block bootstrap with multiple seeds (14-day outcome distributions); regime analysis; parameter heatmaps (full landscape) | planned |
+| 3 | Cost/slippage sensitivity, stress scenarios and worst case; Monte Carlo block bootstrap with multiple seeds (14-day outcome distributions); regime analysis; parameter heatmaps (full landscape); random-entry test on every split | **done** |
 | 4 | Excel/CSV importer with alias-based column detection and a validation report (library + CLI); run registry (run ID, config/dataset hashes, git commit), frozen forward-test mode | planned |
 
 ## Rejected or deferred
@@ -49,3 +49,30 @@ ranked by return and then `0.4·Sortino + 0.3·Sharpe + 0.3·Calmar`.
   rate but random timing, the strategy beat only 60% of 20 seeds on return and 50% on Sharpe
   (median random −17.4%). In that period the smaller losses came mainly from *sizing*
   (about 50% average exposure), not from the trend filter's timing.
+
+## Findings from step 3 (`scripts/robustness_report.py --split validation`)
+
+Selected strategy, validation split (Jan–May 2026), next-bar-open fills, base costs.
+
+- **Costs are not what loses money here.** Net −13.0% with $923 of costs; −12.4% even at zero
+  fees. Every cost knob at 100 bps only takes it to −16% to −18%. (The first run reported this
+  as a "0 bps breakeven", which is misleading; the report now says "negative even at zero cost".)
+- **Stress:** the worst plausible combination (2× fees, 2× slippage, +1 bar latency, market impact
+  at 10% of real volume) gives −18.8% vs −13.0% base. Latency or close-instead-of-open fills cost
+  about 1 point. Participation stays tiny, so impact only matters in the reduced-liquidity case.
+- **Monte Carlo (8,000 bootstrapped 14-day paths from validation, 4 seeds):** P(loss) 61%, median
+  −1.3%, 5th percentile −8.9%, P(drawdown worse than 10%) 7.8%, P(beating BTC) 49%. The seeds
+  agree to within 0.05% on the median. This resamples a falling period, so it inherits that drift.
+- **Regimes (by BTC's trailing 30-day return):** in *bear* stretches the strategy lost −2.5% vs
+  BTC −15.3% (11% average exposure); in *bull* it made +3.0% vs +5.8%; in *sideways* stretches
+  (63% of bars) it lost −13.4% vs BTC −6.0%. That's the whipsaw the hypothesis predicted: entering
+  after rises and exiting after drops around the trend line. (Part of the gap is the ETH sleeve;
+  ETH fell 32% over the split.)
+- **Timing vs random entry (30 seeds each):** train beats 90% of random-timing runs on return;
+  validation 60% (43% on Sharpe); holdout 97%. So the trend timing added value in 2 of 3 periods
+  and nothing measurable in the choppy validation period.
+- **Parameter landscapes:** on train, the best cell for both mean 14-day return and Sharpe is
+  trend_span 960 with target_vol 1.0 (live: 960 / 0.5). Neighbours are reasonably close (mean
+  0.63% vs best 0.91%), a moderate plateau. On validation every cell is negative and the best
+  cell moves elsewhere, so the optimum isn't stable across periods. `min_exposure = 0` scores
+  best in both, since the floor costs return, but the floor is there for the ≥8-trading-days rule.
