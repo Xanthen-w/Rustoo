@@ -137,10 +137,11 @@ scientific notation such as `1e-05` for small quantities.
    strategies are long-only / cash and never call the short endpoints.** The
    short client methods are implemented (so the option exists) but unused by
    any strategy until this is confirmed with organizers.
-2. **No historical OHLCV endpoint exists.** Per user decision, the concrete
-   historical data source for backtesting is not yet chosen (`src/data/
-   market_data.py::HistoricalDataSource` is a pluggable interface with no
-   assumption about file layout baked in). The live bot itself only ever reads
+2. **No historical OHLCV endpoint exists.** Backtests use Binance public
+   spot klines (`src/data/binance.py`, `COIN/USD` -> `COINUSDT`), cross-checked
+   against Bloomberg exports (`scripts/compare_sources.py`). Whether
+   Roostoo's mock exchange prices track Binance closely enough for this to
+   be representative is not yet measured against recorded Roostoo tickers. The live bot itself only ever reads
    `/v3/ticker`; if we want our own historical bars going forward we must build
    them by polling and storing ticker snapshots over time (see
    `src/data/roostoo_data.py::TickerBarBuilder`), since Roostoo cannot give us

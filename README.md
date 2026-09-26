@@ -58,6 +58,9 @@ src/execution/client.py  - PublicMarketDataClient / PrivateTradingClient (signed
 src/data/market_data.py  - normalized Ticker type + pluggable HistoricalDataSource
 src/data/universe.py     - tradable universe + precision/min-notional rules, from exchangeInfo
 src/data/roostoo_data.py - live feed wrapper + TickerBarBuilder (self-collected OHLCV)
+src/data/binance.py      - Binance public-archive kline downloader (backtest history)
+src/data/historical.py   - ParquetDataSource / BloombergExcelSource, resampling, wide panels
+scripts/                 - download_binance_history, run_baselines, compare_sources
 src/features/            - momentum, trend, volatility, volume, cross-sectional (all causal)
 src/strategy/signals.py  - baseline strategies -> target weights (long-only, no leverage)
 src/strategy/portfolio.py- vol-scaled weighting, constraints, rebalance-threshold hysteresis
@@ -105,14 +108,28 @@ this bar": the position is held and marked at its last known price rather
 than valued at zero. Sortino uses the standard downside deviation
 (`backtest/metrics.py::downside_deviation`).
 
-### No historical OHLCV from Roostoo
+### Historical data
 
 Roostoo's API has no historical-candle endpoint — only a live ticker
-snapshot (`/v3/ticker`). `src/data/market_data.py::HistoricalDataSource` is a
-pluggable interface for whatever historical data source research ends up
-using; `src/data/roostoo_data.py::TickerBarBuilder` lets the live bot start
-building its own bars from repeated polling, since Roostoo can't hand us
-history retroactively. See `docs/API_NOTES.md` open question #2.
+snapshot (`/v3/ticker`) — so backtests use **Binance spot klines** for the
+same coins (`COIN/USD` on Roostoo ↔ `COINUSDT` on Binance; 86 of Roostoo's 88
+pairs exist there, all but OMNI and TON). Binance's bulk archive is public
+and free; Bloomberg exports are used only to cross-check it.
+
+```bash
+.venv/bin/python scripts/download_binance_history.py   # 2y of 5m bars, all Roostoo pairs -> data/binance/5m/
+.venv/bin/python scripts/run_baselines.py              # every baseline x cost scenario, ranked by composite score
+.venv/bin/python scripts/compare_sources.py            # Binance vs Bloomberg exports in data/raw/bloomberg/
+```
+
+Every loaded bar is indexed by its **close time in UTC** — the moment its
+close price is known — whatever the source's own convention (Bloomberg
+exports are IST and labelled by bar start; Binance by open time). `data/` is
+gitignored: market data, especially licensed Bloomberg data, must never be
+committed.
+
+The live bot can also build its own bars from repeated ticker polling
+(`src/data/roostoo_data.py::TickerBarBuilder`).
 
 ## Roadmap (not yet built)
 
