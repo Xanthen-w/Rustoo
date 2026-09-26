@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from backtest import robustness as rb  # noqa: E402
 from backtest.costs import SCENARIOS  # noqa: E402
+from backtest.registry import RunRegistry  # noqa: E402
 from backtest.robustness_report import run_robustness  # noqa: E402
 from backtest.splits import load_split_fields, load_split_panel, load_splits  # noqa: E402
 from src.data.historical import ParquetDataSource  # noqa: E402
@@ -93,7 +94,17 @@ def main() -> int:
     print(f"MC 14d: P(loss) {m['p_loss']:.1%}, p5 {m['percentiles']['p5']['total_return']:+.2%}, "
           f"median {m['percentiles']['p50']['total_return']:+.2%}, P(beat BTC) {m.get('p_beats_benchmark', float('nan')):.1%}")
     print("random entry:", summary["random_entry"])
+    rep = summary["reproducibility"]
+    run_id = RunRegistry().register(
+        "robustness", [str(Path(__file__).relative_to(REPO_ROOT))] + sys.argv[1:],
+        {"params": rep["params"], "engine": rep["engine"], "costs": rep["costs"], "split": args.split,
+         "mc_seeds": rep["mc_seeds"], "mc_sims": args.mc_sims, "cost_sigma": args.cost_sigma,
+         "random_seeds": rep["random_seeds"], "landscape": not args.no_landscape},
+        rep["data_hash_close"], out,
+        {"net_return": summary["base"]["net_return"], "worst_stress_return": summary["worst_stress"]["net_return"],
+         "mc_p_loss": m["p_loss"], "mc_p5_return": m["percentiles"]["p5"]["total_return"]})
     print(f"report: {Path(out) / 'robustness.html'}")
+    print(f"run id: {run_id}  (python scripts/runs.py show {run_id})")
     return 0
 
 

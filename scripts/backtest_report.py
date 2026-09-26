@@ -23,6 +23,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from backtest.costs import SCENARIOS  # noqa: E402
+from backtest.registry import RunRegistry  # noqa: E402
 from backtest.report import ReportConfig, run_report  # noqa: E402
 from backtest.splits import load_split_fields, load_split_panel, load_splits  # noqa: E402
 from src.data.historical import ParquetDataSource  # noqa: E402
@@ -84,7 +85,14 @@ def main() -> int:
     print(f"{args.strategy} on {split.name} ({summary['period']['start'][:10]} -> {summary['period']['end'][:10]}): "
           f"net {n['total_return']:+.2%}, gross {summary['gross']['total_return']:+.2%}, Sharpe {n['sharpe']:.2f}, "
           f"max DD {n['max_drawdown']:.2%}, costs ${summary['costs']['total_costs']:,.0f}")
+    rep = summary["reproducibility"]
+    run_id = RunRegistry().register(
+        "backtest", [str(Path(__file__).relative_to(REPO_ROOT))] + sys.argv[1:],
+        {**rep["config"], "split": split.name, "cost_scenario": args.costs}, rep["data_hash_close"], name,
+        {"net_return": n["total_return"], "gross_return": summary["gross"]["total_return"], "sharpe": n["sharpe"],
+         "max_drawdown": n["max_drawdown"], "composite": n["composite"], "total_costs": summary["costs"]["total_costs"]})
     print(f"report: {Path(name) / 'report.html'}")
+    print(f"run id: {run_id}  (python scripts/runs.py show {run_id})")
     return 0
 
 
