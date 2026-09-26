@@ -5,11 +5,14 @@ venv/
 .env
 *.egg-info/
 .pytest_cache/
-logs/*.log
-logs/*.jsonl
+/logs/
 /data/
 !/data/.gitkeep
 .DS_Store
 *.sqlite3
 /research/experiments/*
 !/research/experiments/.gitkeep
+# Bot kill switch (create to halt order sending) and local state
+/STOP
+*.sqlite3-wal
+*.sqlite3-shm

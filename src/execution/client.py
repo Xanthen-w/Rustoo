@@ -144,6 +144,7 @@ class _BaseClient:
         session: requests.Session | None = None,
         clock_skew_tolerance_ms: int = 60_000,
         clock_resync_seconds: float = 300.0,
+        on_request=None,
     ):
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
@@ -153,6 +154,27 @@ class _BaseClient:
         self._clock_resync_seconds = clock_resync_seconds
         self._clock_offset_ms = 0
         self._last_clock_sync: float | None = None
+        # Optional audit hook: called once per HTTP attempt with a dict
+        # {method, path, http_status, success, error, elapsed_ms}. The bot
+        # persists these (the organizers ask teams to track every request's
+        # success/failure). Must never raise into the request path.
+        self._on_request = on_request
+
+    def _report(self, method: str, path: str, started: float, http_status: int | None,
+                success: bool, error: str = "") -> None:
+        if self._on_request is None:
+            return
+        try:
+            self._on_request({
+                "method": method,
+                "path": path.split("?", 1)[0],
+                "http_status": http_status,
+                "success": success,
+                "error": error[:500],
+                "elapsed_ms": (time.monotonic() - started) * 1000,
+            })
+        except Exception:  # auditing must not break trading
+            logger.exception("request audit hook failed")
 
     # -- clock sync ------------------------------------------------------------
     # The server rejects any request whose timestamp is more than
@@ -203,6 +225,7 @@ class _BaseClient:
         max_retries = self.retry_policy.max_retries if retry else 0
 
         for attempt in range(max_retries + 1):
+            started = time.monotonic()
             try:
                 resp = self.session.request(
                     method,
@@ -214,6 +237,7 @@ class _BaseClient:
                 )
             except requests.exceptions.RequestException as exc:
                 last_exc = exc
+                self._report(method, path, started, None, False, f"network: {exc}")
                 logger.warning(
                     "roostoo request network error",
                     extra={"endpoint": path, "attempt": attempt, "error": str(exc)},
@@ -227,6 +251,9 @@ class _BaseClient:
                     time.sleep(self.retry_policy.delay(attempt))
                     continue
                 raise RoostooNetworkError(str(exc)) from exc
+
+            if not resp.ok:
+                self._report(method, path, started, resp.status_code, False, resp.text[:200])
 
             if resp.status_code in _RETRYABLE_STATUS and attempt < max_retries:
                 logger.warning(
@@ -252,10 +279,13 @@ class _BaseClient:
             try:
                 body = resp.json()
             except ValueError as exc:
+                self._report(method, path, started, resp.status_code, False, "non-JSON response")
                 raise RoostooError(f"non-JSON response from {path}: {resp.text[:200]}") from exc
 
             if isinstance(body, dict) and body.get("Success") is False:
                 err_msg = body.get("ErrMsg", "")
+                # Documented "nothing found" answers are successful requests.
+                self._report(method, path, started, resp.status_code, err_msg in _BENIGN_EMPTY_MESSAGES, err_msg)
                 if err_msg not in _BENIGN_EMPTY_MESSAGES:
                     logger.info(
                         "roostoo API returned Success=false",
@@ -263,6 +293,7 @@ class _BaseClient:
                     )
                 raise RoostooAPIError(err_msg, body)
 
+            self._report(method, path, started, resp.status_code, True)
             return body
 
         # Unreachable, but keeps type-checkers happy.
@@ -533,7 +564,7 @@ class PrivateTradingClient(_BaseClient):
         return self._signed_get("/v6/short_positions")
 
 
-def build_clients_from_settings(settings) -> tuple[PublicMarketDataClient, PrivateTradingClient | None]:
+def build_clients_from_settings(settings, on_request=None) -> tuple[PublicMarketDataClient, PrivateTradingClient | None]:
     """Convenience factory. Private client is None if no credentials are set,
     so read-only research/paper flows work without ever touching secrets.
 
@@ -545,6 +576,7 @@ def build_clients_from_settings(settings) -> tuple[PublicMarketDataClient, Priva
         base_url=settings.roostoo.base_url,
         timeout_seconds=settings.roostoo.request_timeout_seconds,
         clock_skew_tolerance_ms=settings.roostoo.clock_skew_tolerance_ms,
+        on_request=on_request,
     )
 
     def retry_policy() -> _RetryPolicy:
