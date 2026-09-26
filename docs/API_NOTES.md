@@ -42,8 +42,10 @@ including it in your own signature will make the signature invalid.
 
 Timestamp tolerance: request is rejected unless
 `abs(serverTime - timestamp) <= 60_000` ms. Clock drift on the host (e.g. EC2)
-matters — the client should sync against `/v3/serverTime` periodically rather
-than trusting local wall clock blindly, and should log a warning if drift grows.
+matters, so the client never trusts the local wall clock blindly: it measures
+the offset to `/v3/serverTime` before its first timestamped request and again
+every 5 minutes, stamps every request with local time + that offset, and logs a
+warning if the offset exceeds half the tolerance (`_BaseClient.sync_clock`).
 
 All POST requests must set `Content-Type: application/x-www-form-urlencoded`.
 
@@ -59,8 +61,12 @@ not just "looks right".
   materials describe an enforced limit of **at most 1 trade per minute** for
   this specific competition (HFT / market-making / arbitrage are explicitly
   banned by the competition rules given to us, independent of this repo). The
-  client throttles trade-submission calls defensively and treats `429`/`5xx`
-  as retryable.
+  client throttles every trade-submitting call (`place_order`, `short_open`,
+  `short_close`) defensively. Read-only and idempotent calls treat `429`/`5xx`
+  and network errors as retryable; **order-creating calls are never retried** —
+  a timeout or `5xx` there raises `RoostooOrderStateUnknownError`, because the
+  order may have executed server-side, and the caller must reconcile via
+  `query_order`/`get_balance` before trying again.
 - **No leverage.** Regular orders (`/v3/place_order`) are plain spot buy/sell —
   no margin parameter exists, so leverage is not something the API even
   exposes for that endpoint.
@@ -114,8 +120,12 @@ General response quirks documented in the repo (apply everywhere):
 From `/v3/exchangeInfo` per pair: round order `price` to `PricePrecision`
 decimals and `quantity` to `AmountPrecision` decimals, and reject/resize any
 order where `price * quantity < MiniOrder`. Implemented in
-`src/data/universe.py::TradingRule.round_order` /
-`TradingRule.meets_min_notional`.
+`src/data/universe.py::TradingRule.clamp_order` /
+`TradingRule.meets_min_notional`. Truncation is done in decimal arithmetic
+(`truncate_to_decimals`), not `floor(x * 10**d) / 10**d`, which is off by one
+unit for values like `0.29`. Numbers are sent to the API as plain decimal
+strings (`client.format_decimal`), never `str(float)`, which would produce
+scientific notation such as `1e-05` for small quantities.
 
 ## Open questions / assumptions (do not silently resolve — confirm before relying on live)
 

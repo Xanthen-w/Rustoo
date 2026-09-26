@@ -7,49 +7,76 @@ any strategy.
 """
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import pandas as pd
 
+logger = logging.getLogger(__name__)
+
 OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
 
 
 @dataclass(frozen=True)
 class Ticker:
-    """A single live snapshot for one pair, normalized from GET /v3/ticker."""
+    """A single live snapshot for one pair, normalized from GET /v3/ticker.
+
+    Roostoo omits any field whose value is exactly zero (docs/API_NOTES.md),
+    so a missing `MaxBid`/`MinAsk` means that side of the book is empty and
+    is stored as 0.0 here — check `has_two_sided_quote` before using `mid`.
+    """
 
     timestamp: datetime
     symbol: str
     price: float  # LastPrice
-    bid: float  # MaxBid
-    ask: float  # MinAsk
+    bid: float  # MaxBid (0.0 = no bids)
+    ask: float  # MinAsk (0.0 = no asks)
     volume: float  # CoinTradeValue (base-asset volume traded)
 
     @property
+    def has_two_sided_quote(self) -> bool:
+        return self.bid > 0 and self.ask > 0
+
+    @property
     def mid(self) -> float:
+        """Bid/ask midpoint, or NaN if either side of the book is empty."""
+        if not self.has_two_sided_quote:
+            return float("nan")
         return (self.bid + self.ask) / 2.0
 
     @classmethod
     def from_roostoo(cls, symbol: str, data: dict, server_time_ms: int) -> "Ticker":
+        """Raises ValueError if LastPrice is missing/zero — a ticker with no
+        last price can't be used for anything."""
+        price = float(data.get("LastPrice", 0.0))
+        if price <= 0:
+            raise ValueError(f"{symbol}: ticker has no LastPrice")
         return cls(
             timestamp=datetime.fromtimestamp(server_time_ms / 1000, tz=timezone.utc),
             symbol=symbol,
-            price=float(data["LastPrice"]),
-            bid=float(data["MaxBid"]),
-            ask=float(data["MinAsk"]),
+            price=price,
+            bid=float(data.get("MaxBid", 0.0)),
+            ask=float(data.get("MinAsk", 0.0)),
             volume=float(data.get("CoinTradeValue", 0.0)),
         )
 
 
 def tickers_from_response(response: dict) -> dict[str, Ticker]:
-    """Parse the full body of GET /v3/ticker (single-pair or all-pairs)."""
+    """Parse the full body of GET /v3/ticker (single-pair or all-pairs).
+
+    Pairs without a usable LastPrice are skipped (with a warning) rather than
+    failing the whole batch — same treatment as pairs missing from the
+    response entirely (docs/API_NOTES.md open question #4)."""
     server_time_ms = int(response["ServerTime"])
-    return {
-        symbol: Ticker.from_roostoo(symbol, payload, server_time_ms)
-        for symbol, payload in response.get("Data", {}).items()
-    }
+    tickers: dict[str, Ticker] = {}
+    for symbol, payload in response.get("Data", {}).items():
+        try:
+            tickers[symbol] = Ticker.from_roostoo(symbol, payload, server_time_ms)
+        except ValueError as exc:
+            logger.warning("skipping unusable ticker", extra={"pair": symbol, "error": str(exc)})
+    return tickers
 
 
 class HistoricalDataSource(ABC):

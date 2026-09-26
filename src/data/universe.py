@@ -5,10 +5,21 @@ per-pair facts that only exchangeInfo knows.
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
+from decimal import ROUND_DOWN, Decimal
 
 from src.execution.client import PublicMarketDataClient
+
+
+def truncate_to_decimals(value: float, decimals: int) -> float:
+    """Round *down* to `decimals` places without binary-float error.
+
+    `math.floor(value * 10**d) / 10**d` is wrong for values like 0.29
+    (0.29 * 100 == 28.999999999999996 -> 0.28), so this goes through the
+    shortest decimal repr instead.
+    """
+    quantum = Decimal(1).scaleb(-decimals)
+    return float(Decimal(repr(float(value))).quantize(quantum, rounding=ROUND_DOWN))
 
 
 @dataclass(frozen=True)
@@ -22,12 +33,10 @@ class TradingRule:
     min_order_notional: float
 
     def round_price(self, price: float) -> float:
-        factor = 10 ** self.price_precision
-        return math.floor(price * factor) / factor
+        return truncate_to_decimals(price, self.price_precision)
 
     def round_quantity(self, quantity: float) -> float:
-        factor = 10 ** self.amount_precision
-        return math.floor(quantity * factor) / factor
+        return truncate_to_decimals(quantity, self.amount_precision)
 
     def meets_min_notional(self, price: float, quantity: float) -> bool:
         return price * quantity >= self.min_order_notional

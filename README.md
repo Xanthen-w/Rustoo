@@ -68,6 +68,18 @@ tests/                   - incl. a live signature check against the doc's worked
                             and look-ahead-bias regression tests for every baseline strategy
 ```
 
+### Live-trading safety
+
+`PrivateTradingClient` refuses every state-changing call (place/cancel order,
+short open/close) unless it was built with live trading enabled, and
+`build_clients_from_settings` only enables it when **both** `APP_ENV=live`
+and `LIVE_TRADING=true`. Read-only calls (balance, order queries) always work.
+Shorting additionally needs `execution.allow_shorting: true`, and a
+cancel-everything call needs `execution.allow_cancel_all_without_filter: true`
+plus an explicit per-call flag. Order-creating calls are never retried
+automatically (a retry after a timeout could double-submit); see
+`docs/API_NOTES.md`.
+
 Strategy code (`src/strategy`, `src/features`) never imports the API client —
 it only ever sees normalized `pandas` data, so every strategy is testable and
 backtestable without touching the network.

@@ -54,3 +54,13 @@ def test_universe_whitelist_intersects():
     }
     universe = Universe(rules, whitelist=["BTC/USD"])
     assert universe.tradable_pairs() == ["BTC/USD"]
+
+
+@pytest.mark.parametrize(
+    "value,decimals,expected",
+    [(0.29, 2, 0.29), (1.15, 2, 1.15), (0.57, 2, 0.57), (1.0000001, 6, 1.0), (123.456, 0, 123.0), (0.123456789, 8, 0.12345678)],
+)
+def test_truncation_has_no_binary_float_error(value, decimals, expected):
+    rule = TradingRule("X/USD", "X", "USD", True, decimals, decimals, 0.0)
+    assert rule.round_price(value) == expected
+    assert rule.round_quantity(value) == expected
