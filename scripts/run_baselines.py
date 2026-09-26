@@ -56,6 +56,7 @@ def build_strategies(params: dict, benchmark: str) -> dict:
             band=core.get("band", 0.02),
             vol_lookback=core.get("vol_lookback", 168),
             target_vol=core.get("target_vol", 0.4),
+            min_exposure=core.get("min_exposure", 0.0),
         ),
         f"buy_and_hold[{benchmark}]": lambda c: signals.buy_and_hold(c, benchmark),
         "equal_weight": signals.equal_weight,

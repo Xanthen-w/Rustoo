@@ -57,10 +57,12 @@ not just "looks right".
 
 ## Rate limits / trading constraints from the competition
 
-- No official numeric rate limit is published in this repo, but hackathon
-  materials describe an enforced limit of **at most 1 trade per minute** for
-  this specific competition (HFT / market-making / arbitrage are explicitly
-  banned by the competition rules given to us, independent of this repo). The
+- No numeric rate limit is published, either in this repo or in the official
+  competition rules (docs/COMPETITION_RULES.md), which only ban HFT /
+  market-making / arbitrage and warn that excessive requests get failed
+  responses. An earlier note here claimed a 1-trade-per-minute limit; it is
+  not in the official text, but the client keeps a 60s throttle by default
+  as a conservative choice (`execution.min_seconds_between_orders`). The
   client throttles every trade-submitting call (`place_order`, `short_open`,
   `short_close`) defensively. Read-only and idempotent calls treat `429`/`5xx`
   and network errors as retryable; **order-creating calls are never retried** —
@@ -129,7 +131,8 @@ scientific notation such as `1e-05` for small quantities.
 
 ## Open questions / assumptions (do not silently resolve — confirm before relying on live)
 
-1. **Is shorting permitted by this specific competition's rules?** The API
+1. **Is shorting permitted by this specific competition's rules?** The
+   official rules say "1x long and short" is permitted. The API
    supports it, loss is capped at collateral (so arguably not "leverage" in the
    sense the competition rules prohibit), but the documented error
    `"this competition does not allow short positions"` shows Roostoo disables
@@ -146,9 +149,9 @@ scientific notation such as `1e-05` for small quantities.
    them by polling and storing ticker snapshots over time (see
    `src/data/roostoo_data.py::TickerBarBuilder`), since Roostoo cannot give us
    history retroactively.
-3. **Exact API rate limit isn't in this repo.** We rely on hackathon materials
-   for "max 1 trade/minute"; if this changes, `config/config.yaml:
-   execution.min_seconds_between_orders` is the single place to adjust it.
+3. **Exact API rate limit is unpublished.** The client throttles orders to one
+   per `execution.min_seconds_between_orders` (60s default, conservative);
+   that is the single place to adjust it.
 4. **Not every pair in `exchangeInfo` has ticker data.** Verified live on
    2026-09-22: `exchangeInfo` listed 88 tradable pairs, but the
    no-`pair`-argument call to `/v3/ticker` returned only 86 of them. The

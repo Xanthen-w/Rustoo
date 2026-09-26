@@ -90,3 +90,35 @@ grids:
       z_entry: [1.5, 2.0, 2.5]
     engine:
       rebalance_threshold: [0.0, 0.05, 0.10]
+
+# 14-day window analysis (scripts/window_analysis.py): the competition scores
+# one 14-day run from cash, so candidates are compared on the distribution of
+# outcomes over every historical 14-day window (step 1 day).
+window_analysis:
+  resample: "1h"
+  window_days: 14
+  step_days: 1
+  warmup_days: 110          # longest trend span (100d) + slack, skipped at the data start
+  min_trading_days: 8       # competition rule
+  cost_scenario: base
+  grids:
+    buy_and_hold:           # first entry = benchmark for p_beats_benchmark
+      params:
+        symbol: ["BTC/USD"]
+      engine:
+        rebalance_threshold: [0.05]
+    trend_vol_target:       # slow (daily-scale) trend on hourly bars: 960h = 40 days
+      # Narrowed from a 48-point train sweep (2026-09-27): 20-100d spans all
+      # sat in cash most of 2025 and traded on a median of 1-4 days per
+      # window. min_exposure + a daily scheduled rebalance address the
+      # competition's >= 8 trading-days rule.
+      params:
+        assets: [["BTC/USD", "ETH/USD"], ["BTC/USD", "ETH/USD", "SOL/USD"]]
+        trend_span: [960, 1440]
+        band: [0.03]
+        target_vol: [0.5, 1.0]
+        vol_lookback: [720]
+        min_exposure: [0.0, 0.15, 0.3]
+      engine:
+        rebalance_threshold: [0.05]
+        rebalance_hours_utc: [[], [0]]

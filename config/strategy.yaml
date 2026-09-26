@@ -25,12 +25,24 @@ portfolio:
   min_trade_threshold: 0.02   # do not trade if |target - current| below this
   cash_weight_floor: 0.0
 
+# LIVE STRATEGY (selected 2026-09-27). Chosen on 14-day windows of the
+# train split, confirmed once on validation (Jan-May 2026); the holdout is
+# untouched. Validation: mean 14d return -1.3% vs BTC buy-and-hold -1.6%,
+# 10th percentile -7.1% vs -14.0%, worst -11.0% vs -28.7%, >= 8 trading
+# days in 100% of windows. See docs/STRATEGY.md.
 trend_vol_target:
   assets: ["BTC/USD", "ETH/USD"]
-  trend_span: 168      # bars
-  band: 0.02           # hysteresis around the EMA
-  vol_lookback: 168
-  target_vol: 0.4      # annualized
+  trend_span: 960      # hourly bars = 40 days
+  band: 0.03           # hysteresis around the EMA
+  vol_lookback: 720    # 30 days
+  target_vol: 0.5      # annualized, split across assets
+  min_exposure: 0.15   # share of vol-target size kept when out of trend
+
+execution_policy:
+  bar: "1h"
+  rebalance_threshold: 0.05     # skip trades smaller than 5% weight drift...
+  rebalance_hours_utc: [0]      # ...except the daily 00:00 UTC exact rebalance
+  risk_overlay: false           # drawdown overlay hurt in walk-forward (whipsaw)
 
 # Drawdown state machine (src/risk/drawdown.py): exposure multiplier per
 # state; de-escalates one level after cooldown_bars, re-arming the peak.

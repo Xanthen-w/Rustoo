@@ -27,6 +27,9 @@ Accounting rules:
   multiplies each bar's target weights by an exposure in [0, 1]. It is
   updated with each bar's *post-trade* equity and its answer applies from
   the next bar, so sizing never uses the price the trade executes at.
+- `rebalance_hours_utc`: bars whose (UTC close-time) hour is listed are
+  rebalanced exactly to target, ignoring the band — a scheduled daily
+  rebalance, mirroring what the live bot does.
 - `rebalance_threshold` (turnover control): an asset is only traded when
   |target weight - current weight| >= the threshold; below it the position
   is left to drift. A target of zero is always executed in full, so exits
@@ -110,6 +113,7 @@ class BacktestEngine:
         max_gross_exposure: float = 1.0,
         rebalance_threshold: float = 0.0,
         risk_overlay=None,
+        rebalance_hours_utc: tuple = (),
     ):
         if execution_lag < 1:
             raise ValueError(
@@ -126,6 +130,9 @@ class BacktestEngine:
         self.max_gross_exposure = max_gross_exposure
         self.rebalance_threshold = rebalance_threshold
         self.risk_overlay = risk_overlay
+        self.rebalance_hours_utc = frozenset(int(h) for h in rebalance_hours_utc)
+        if any(not 0 <= h < 24 for h in self.rebalance_hours_utc):
+            raise ValueError("rebalance_hours_utc must be hours in [0, 24)")
 
     def _validate_weights(self, target_weights: pd.DataFrame) -> None:
         values = target_weights.to_numpy(dtype=float)
@@ -170,6 +177,8 @@ class BacktestEngine:
         exposure = 1.0
         if self.risk_overlay is not None:
             self.risk_overlay.reset(cash)
+        index_utc = close_wide.index.tz_convert("UTC") if close_wide.index.tz is not None else close_wide.index
+        scheduled = np.isin(index_utc.hour, list(self.rebalance_hours_utc)) if self.rebalance_hours_utc else np.zeros(n, bool)
 
         for i in range(n):
             p = prices[i]
@@ -184,7 +193,7 @@ class BacktestEngine:
             target_row = applied[i] * exposure
             exposures[i] = exposure
 
-            if self.rebalance_threshold > 0 and equity > 0:
+            if self.rebalance_threshold > 0 and equity > 0 and not scheduled[i]:
                 # Inside the band: leave the position alone this bar (treated
                 # exactly like an untradable asset below). Exits always trade.
                 drift = np.abs(target_row - current_value / equity)

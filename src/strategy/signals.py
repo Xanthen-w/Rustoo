@@ -135,6 +135,7 @@ def trend_vol_target(
     vol_lookback: int = 168,
     target_vol: float = 0.4,
     max_weight: float = 1.0,
+    min_exposure: float = 0.0,
 ) -> pd.DataFrame:
     """Risk-managed core: hold each of `assets` only while it is in an
     uptrend (EMA trend with a hysteresis `band`, see features.trend.trend_state),
@@ -144,7 +145,14 @@ def trend_vol_target(
 
     Aims at the competition score rather than raw return: being flat in
     downtrends cuts drawdown (Calmar) and downside deviation (Sortino).
+
+    `min_exposure` keeps that fraction of each asset's vol-target size while
+    it is out of trend, instead of going fully to cash — the competition
+    requires trading on >= 8 days, and a portfolio that is entirely cash has
+    nothing to rebalance.
     """
+    if not 0.0 <= min_exposure <= 1.0:
+        raise ValueError("min_exposure must be in [0, 1]")
     weights = pd.DataFrame(0.0, index=close_wide.index, columns=close_wide.columns)
     present = [a for a in assets if a in close_wide.columns]
     if not present:
@@ -155,7 +163,8 @@ def trend_vol_target(
         in_trend = trend_feat.trend_state(close, trend_span, band)
         vol = vol_feat.realized_vol(close, vol_lookback, annualize_periods_per_year=bars_per_year)
         size = (target_vol / len(present) / vol).clip(upper=max_weight)
-        weights[asset] = (in_trend * size).fillna(0.0)
+        exposure = in_trend + (1.0 - in_trend) * min_exposure
+        weights[asset] = (exposure * size).fillna(0.0)
     gross = weights.sum(axis=1)
     return weights.div(gross.where(gross > 1.0, 1.0), axis=0)
 

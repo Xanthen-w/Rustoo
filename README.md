@@ -10,6 +10,11 @@ Composite Score = 0.4 * Sortino + 0.3 * Sharpe + 0.3 * Calmar
 
 — not raw return. See `backtest/metrics.py::composite_score`.
 
+**Live strategy:** risk-managed BTC/ETH trend core (40-day EMA trend filter with
+hysteresis, volatility-targeted sizing, 15% exposure floor, daily 00:00 UTC
+rebalance). Rationale and evidence: [`docs/STRATEGY.md`](docs/STRATEGY.md).
+Competition constraints: [`docs/COMPETITION_RULES.md`](docs/COMPETITION_RULES.md).
+
 ## Status
 
 This repo is being built incrementally, in the order laid out below. Phases
@@ -146,6 +151,7 @@ split's own window is scored.
 ```bash
 .venv/bin/python scripts/run_baselines.py --split train          # fixed-parameter baselines
 .venv/bin/python scripts/walk_forward.py --split train           # walk-forward search over config/research.yaml grids
+.venv/bin/python scripts/window_analysis.py --split train        # every 14-day window from cash (the competition horizon)
 ```
 
 `scripts/walk_forward.py` picks parameters on each rolling in-sample window

@@ -135,3 +135,28 @@ def test_engine_without_overlay_reports_no_exposure():
     idx = pd.date_range("2025-01-01", periods=3, freq="h")
     close = pd.DataFrame({"A": [1.0, 1.0, 1.0]}, index=idx)
     assert BacktestEngine(FREE).run(close, pd.DataFrame({"A": [0.5] * 3}, index=idx)).exposure is None
+
+
+def test_min_exposure_keeps_a_floor_when_out_of_trend():
+    close = _prices(seed=3)
+    close["BTC/USD"] = np.linspace(200, 100, len(close))  # persistent downtrend
+    floor = signals.trend_vol_target(close, assets=("BTC/USD",), trend_span=48, vol_lookback=48,
+                                     target_vol=0.5, min_exposure=0.2)
+    none = signals.trend_vol_target(close, assets=("BTC/USD",), trend_span=48, vol_lookback=48, target_vol=0.5)
+    late = slice(200, None)
+    assert (none["BTC/USD"].iloc[late] == 0).all()
+    assert (floor["BTC/USD"].iloc[late] > 0).all()
+
+
+def test_scheduled_rebalance_trades_daily_despite_band():
+    idx = pd.date_range("2025-01-01 01:00", periods=24 * 5, freq="h", tz="UTC")
+    rng = np.random.default_rng(4)
+    close = pd.DataFrame({s: 100 * np.cumprod(1 + rng.normal(0, 0.002, len(idx))) for s in "AB"}, index=idx)
+    weights = pd.DataFrame(0.5, index=idx, columns=["A", "B"])
+    banded = BacktestEngine(FREE, rebalance_threshold=0.2).run(close, weights)
+    daily = BacktestEngine(FREE, rebalance_threshold=0.2, rebalance_hours_utc=(0,)).run(close, weights)
+    days_traded = lambda r: pd.Series(r.trade_notional_history.index[(r.trade_notional_history != 0).any(axis=1)].date).nunique()
+    assert days_traded(banded) == 1  # only the initial entry
+    assert days_traded(daily) == 6  # entry on Jan 1 + midnight rebalances Jan 2..6
+    midnight = daily.trade_notional_history.index.hour == 0
+    assert (daily.trade_notional_history[~midnight].iloc[2:] == 0).all().all()
