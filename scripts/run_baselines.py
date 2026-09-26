@@ -64,6 +64,8 @@ def main() -> int:
     parser.add_argument("--resample", default="1h", help="Bar size to trade on, e.g. 5min, 1h, 4h. 'none' keeps source bars.")
     parser.add_argument("--benchmark", default="BTC/USD")
     parser.add_argument("--capital", type=float, default=100_000.0)
+    parser.add_argument("--max-staleness-days", type=float, default=2.0,
+                        help="Drop pairs whose last bar is this many days before the panel's end.")
     parser.add_argument("--strategy-config", type=Path, default=REPO_ROOT / "config" / "strategy.yaml")
     parser.add_argument("--out", type=Path, help="Optional CSV path for the full results table.")
     args = parser.parse_args()
@@ -79,6 +81,19 @@ def main() -> int:
     resample = None if args.resample.lower() == "none" else args.resample
     close = load_panel(source, pairs, args.start, args.end, resample=resample)
     close = close.dropna(how="all")
+
+    # A pair whose data stops well before the panel ends was delisted from
+    # the source exchange. The engine would carry any position in it frozen
+    # at its last price forever, so drop it from the universe instead.
+    last_seen = close.apply(lambda s: s.last_valid_index())
+    stale = last_seen[last_seen < close.index[-1] - pd.Timedelta(days=args.max_staleness_days)]
+    if len(stale):
+        print("Excluding pairs whose data ends early (delisted?): "
+              + ", ".join(f"{p} (last {t:%Y-%m-%d})" for p, t in stale.items()))
+        close = close.drop(columns=stale.index)
+    if args.benchmark not in close.columns:
+        print(f"Benchmark {args.benchmark} has no usable data.")
+        return 1
     bar_seconds = close.index.to_series().diff().median().total_seconds()
     periods_per_year = SECONDS_PER_YEAR / bar_seconds
     max_trades_per_bar = max(int(bar_seconds // 60), 1)
