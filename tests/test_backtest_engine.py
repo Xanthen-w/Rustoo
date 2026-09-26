@@ -112,3 +112,37 @@ def test_negative_target_weights_rejected():
     weights = pd.DataFrame({"A": [-0.5] * 3}, index=dates)
     with pytest.raises(ValueError, match="shorting"):
         BacktestEngine(cost_model=CostModel()).run(close, weights)
+
+
+def test_size_orders_with_all_positions_frozen_and_negative_rounding_budget():
+    # Real failure from walk-forward: fully invested, every held asset inside
+    # the rebalance band, cash 0, budget = -1.5e-11 from float rounding, and a
+    # new asset wanting to enter. Used to divide by zero and poison equity.
+    from backtest.engine import size_orders
+
+    current = np.array([43955.2370953610, 43955.2370953610, 0.0])
+    equity = current.sum() - 1.4551915228366852e-11
+    tradable = np.array([False, False, True])
+    target = np.array([0.45, 0.45, 0.10])
+    with np.errstate(all="raise"):
+        desired = size_orders(target, current, tradable, equity, cost_rate=0.0015)
+    assert np.isfinite(desired).all()
+    assert desired[2] == 0.0  # nothing left to spend
+    assert desired[:2].tolist() == current[:2].tolist()
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_engine_stays_finite_and_unlevered_under_random_targets(seed):
+    rng = np.random.default_rng(seed)
+    n, m = 120, 6
+    dates = pd.date_range("2025-01-01", periods=n, freq="h")
+    close = pd.DataFrame(100 * np.cumprod(1 + rng.normal(0, 0.01, (n, m)), axis=0), index=dates, columns=list("ABCDEF"))
+    close.iloc[rng.integers(0, n, 10), rng.integers(0, m, 10)] = np.nan  # scattered gaps
+    raw = rng.random((n, m)) * (rng.random((n, m)) > 0.4)
+    weights = pd.DataFrame(raw / np.maximum(raw.sum(axis=1, keepdims=True), 1.0), index=dates, columns=close.columns)
+    engine = BacktestEngine(cost_model=CostModel(taker_fee=0.001, maker_fee=0.001, slippage_bps=5.0),
+                            rebalance_threshold=float(rng.choice([0.0, 0.02, 0.05, 0.1])))
+    with np.errstate(all="raise"):
+        result = engine.run(close, weights)
+    assert np.isfinite(result.portfolio_value).all()
+    assert (result.weights_history.sum(axis=1) <= 1.0 + 1e-9).all()

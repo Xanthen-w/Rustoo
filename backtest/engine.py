@@ -40,6 +40,50 @@ from backtest.costs import CostModel
 _WEIGHT_TOLERANCE = 1e-9
 
 
+def size_orders(
+    target_weights: np.ndarray,
+    current_value: np.ndarray,
+    tradable: np.ndarray,
+    equity: float,
+    cost_rate: float,
+) -> np.ndarray:
+    """Desired post-trade position values for one bar.
+
+    Untradable assets (no price, or inside the rebalance band) keep their
+    current value. Tradable assets go to target * equity, unless that plus
+    fees would spend more than the equity not tied up in frozen positions —
+    then all tradable targets are scaled down together so cash never goes
+    negative.
+    """
+    frozen_value = current_value[~tradable].sum()
+    # Clamped: with every position frozen and cash at ~0 this can come out a
+    # hair below zero from float rounding.
+    budget = max(equity - frozen_value, 0.0)
+    base = np.where(tradable, target_weights, 0.0) * equity
+    desired = np.where(tradable, base, current_value)
+    fee = cost_rate * np.abs(desired - current_value).sum()
+    spend = desired[tradable].sum()
+    if spend <= 0 or spend + fee <= budget:
+        return desired
+
+    # Fees are a small fraction of notional, so this fixed-point iteration
+    # converges in a handful of steps.
+    for _ in range(20):
+        scale = max(budget - fee, 0.0) / spend
+        desired = np.where(tradable, base * scale, current_value)
+        new_fee = cost_rate * np.abs(desired - current_value).sum()
+        converged = abs(new_fee - fee) < 1e-12 * max(equity, 1.0)
+        fee = new_fee
+        if converged:
+            break
+    # Absorb the last rounding error so cash can't dip below zero.
+    overshoot = desired[tradable].sum() + fee - budget
+    total = desired[tradable].sum()
+    if overshoot > 0 and total > 0:
+        desired = np.where(tradable, desired * max(1.0 - overshoot / total, 0.0), desired)
+    return desired
+
+
 @dataclass
 class BacktestResult:
     portfolio_value: pd.Series
@@ -133,34 +177,7 @@ class BacktestEngine:
                 drift = np.abs(applied[i] - current_value / equity)
                 tradable = tradable & ((drift >= self.rebalance_threshold) | (applied[i] == 0))
 
-            # Positions in untradable assets are frozen; only the rest of
-            # equity is available for the tradable targets.
-            frozen_value = current_value[~tradable].sum()
-            target = np.where(tradable, applied[i], 0.0)
-            desired = np.where(tradable, target * equity, current_value)
-            fee = rate * np.abs(desired - current_value).sum()
-
-            budget = equity - frozen_value
-            spend = desired[tradable].sum()
-            if spend > 0 and spend + fee > budget:
-                # Scale buys down until spend + fees fits the budget. Fees are
-                # a small fraction of notional, so this fixed-point iteration
-                # converges in a handful of steps.
-                base = target * equity
-                scale = 1.0
-                for _ in range(20):
-                    scale = max(budget - fee, 0.0) / spend
-                    desired = np.where(tradable, base * scale, current_value)
-                    new_fee = rate * np.abs(desired - current_value).sum()
-                    if abs(new_fee - fee) < 1e-12 * max(equity, 1.0):
-                        fee = new_fee
-                        break
-                    fee = new_fee
-                # Guard the last rounding step so cash can't dip below zero.
-                overshoot = desired[tradable].sum() + fee - budget
-                if overshoot > 0:
-                    desired = np.where(tradable, desired * (1 - overshoot / desired[tradable].sum()), desired)
-                    fee = rate * np.abs(desired - current_value).sum()
+            desired = size_orders(applied[i], current_value, tradable, equity, rate)
 
             delta = np.where(tradable, desired - current_value, 0.0)
             delta[np.abs(delta) < 1e-12] = 0.0
@@ -170,6 +187,8 @@ class BacktestEngine:
 
             cash = equity - (quantities * mark).sum() - fee
             post_value = cash + (quantities * mark).sum()
+            if not np.isfinite(post_value):
+                raise RuntimeError(f"non-finite portfolio value at {close_wide.index[i]}; engine state is corrupt")
 
             portfolio_values[i] = post_value
             fees[i] = fee
