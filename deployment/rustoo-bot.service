@@ -1,0 +1,20 @@
+# systemd unit for the trading bot. Installed by deployment/setup_ec2.sh,
+# which substitutes __USER__ and __REPO__.
+[Unit]
+Description=Rustoo trading bot (Roostoo competition)
+After=network-online.target time-sync.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__REPO__
+# Mode comes from __REPO__/.env: orders are only sent with APP_ENV=live AND LIVE_TRADING=true.
+ExecStart=__REPO__/.venv/bin/python -m src.main
+Restart=always
+RestartSec=15
+KillSignal=SIGTERM
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

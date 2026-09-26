@@ -17,16 +17,12 @@ Competition constraints: [`docs/COMPETITION_RULES.md`](docs/COMPETITION_RULES.md
 
 ## Status
 
-This repo is being built incrementally, in the order laid out below. Phases
-0–9 ("foundation") are done and tested; later phases (portfolio risk state
-machine, execution/reconciliation daemon, logging/monitoring, walk-forward
-validation, ML, AWS deployment) are not built yet — see the roadmap section.
-
-Verified against the **official** API docs
-([`roostoo/Roostoo-API-Documents`](https://github.com/roostoo/Roostoo-API-Documents))
-and live-smoke-tested against `https://mock-api.roostoo.com` — see
-`docs/API_NOTES.md` for everything that's confirmed vs. still an open
-question.
+Built and tested (185 tests): API client with safety gates, historical data
+pipeline, look-ahead-safe backtester, walk-forward and 14-day window
+research tooling, the selected live strategy, and the **live bot**:
+signal → order planning → execution → reconciliation → SQLite audit trail,
+with a paper mode, a kill switch, and EC2/systemd deployment. Remaining work
+is listed in the roadmap at the end.
 
 ## Setup
 
@@ -53,6 +49,34 @@ print(list(c.get_exchange_info()['TradePairs'].keys())[:5])
 "
 ```
 
+## Running the bot
+
+```bash
+.venv/bin/python -m src.main --once     # one iteration (smoke test)
+.venv/bin/python -m src.main            # run continuously
+.venv/bin/python -m src.main --status   # audit summary: decisions, orders, active trading days
+```
+
+- **Mode:** orders go to Roostoo only when `APP_ENV=live` **and** `LIVE_TRADING=true`
+  (and API credentials are set). Otherwise the bot runs the same decisions against a
+  simulated `PaperBroker` wallet ($100k, 0.1% taker fee). Paper and live keep separate
+  databases (`data/state/bot-<mode>.sqlite3`).
+- **Loop:** every 60s it reads Roostoo tickers and the balance and snapshots equity.
+  A couple of minutes after each hourly bar closes, it recomputes the strategy's targets on
+  Binance hourly closes (the backtested data) and trades toward them (`src/bot/runner.py`).
+- **Execution policy:** same as the backtest. Trade an asset only when its weight drifts
+  ≥5% from target; exact rebalance daily at 00:00 UTC. If a UTC day reaches 12:00 with no
+  filled order, one exact rebalance is forced, since the rules require ≥8 trading days.
+  MARKET orders, rounded to exchange precision, with Roostoo's minimum order size respected;
+  sells before buys.
+- **Audit trail** (`src/bot/store.py`): every API request and its outcome, every decision,
+  every order with its real fill/fee/role from Roostoo, and equity snapshots.
+  JSON logs go to `logs/bot.jsonl`.
+- **Kill switch:** `touch STOP` in the repo root makes the bot keep deciding and logging but
+  stop sending orders. `rm STOP` resumes.
+- **Deployment:** `bash deployment/setup_ec2.sh` on the EC2 instance (systemd service,
+  clock sync, venv, tests).
+
 ## Architecture
 
 ```
@@ -65,7 +89,14 @@ src/data/universe.py     - tradable universe + precision/min-notional rules, fro
 src/data/roostoo_data.py - live feed wrapper + TickerBarBuilder (self-collected OHLCV)
 src/data/binance.py      - Binance public-archive kline downloader (backtest history)
 src/data/historical.py   - ParquetDataSource / BloombergExcelSource, resampling, wide panels
-scripts/                 - download_binance_history, run_baselines, compare_sources
+scripts/                 - download_binance_history, run_baselines, walk_forward, window_analysis, compare_sources
+src/data/live_history.py - recent Binance hourly closes for the live signal (closed bars only)
+src/execution/portfolio.py - wallet parsing + pure order planner (band, daily rebalance, precision, MiniOrder)
+src/execution/broker.py  - LiveBroker (Roostoo, reconciles unknown outcomes) / PaperBroker (simulated)
+src/bot/                 - runner (loop), store (SQLite audit trail), logging
+src/risk/drawdown.py     - drawdown state machine (implemented, off: hurt in walk-forward)
+src/main.py              - entry point
+deployment/              - systemd unit + EC2 setup script
 src/features/            - momentum, trend, volatility, volume, cross-sectional (all causal)
 src/strategy/signals.py  - baseline strategies -> target weights (long-only, no leverage)
 src/strategy/portfolio.py- vol-scaled weighting, constraints, rebalance-threshold hysteresis
@@ -163,18 +194,12 @@ parameter, since trading costs dominate at hourly frequency.
 The live bot can also build its own bars from repeated ticker polling
 (`src/data/roostoo_data.py::TickerBarBuilder`).
 
-## Roadmap (not yet built)
+## Roadmap
 
-- Phase 10–13: rule-based market regime model, full risk engine (drawdown
-  state machine: NORMAL → CAUTION → DEFENSIVE → EMERGENCY), correlation-aware
-  portfolio construction.
-- Phase 15–18: order execution engine (submit → confirm fill → reconcile),
-  position reconciliation against Roostoo's actual account state, structured
-  rotating logs, a persisted performance database (SQLite).
-- Phase 20–25: YAML-driven parameter sweeps, walk-forward validation,
-  parameter robustness/ablation studies, stress tests, Monte Carlo
-  robustness diagnostics.
-- Phase 26: ML/regime classification, only after the rule-based baseline
-  above is validated.
-- `deployment/`: systemd unit + AWS EC2 bring-up, `src/main.py` continuous
-  run loop wiring all of the above together.
+- **Prep period (Oct 1–3):** deploy to EC2, run in paper mode, then live with the
+  competition key. Confirm through the bot (never manually) whether Roostoo accepts
+  shorts, and compare Roostoo prices with Binance on recorded tickers.
+- Maker (LIMIT) execution to cut fees from 0.10% to 0.05% where fills allow.
+- Shorting in downtrends, if the competition allows it: the largest remaining lever,
+  given both evaluation periods were falling markets.
+- The holdout split (Jun–Sep 2026) is still unused: one final evaluation before go-live.
