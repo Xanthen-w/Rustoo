@@ -11,6 +11,18 @@ single most common source of accidental look-ahead in naive backtests.
 
 Nothing here uses `close_wide` values beyond the bar being executed at any
 point in the loop.
+
+Accounting rules:
+
+- Long-only, no leverage: target weights must be >= 0 and each row must sum
+  to at most `max_gross_exposure` (default 1.0). Violations raise instead of
+  being silently simulated as borrowing.
+- A missing (NaN) price means the asset can't be traded on that bar. An
+  existing position is carried unchanged and marked at its last known price
+  — a data gap is not a loss.
+- Trades are sized so that cash never goes negative after fees: when a
+  target would spend more than the available equity once costs are
+  included, all buys are scaled down proportionally.
 """
 from __future__ import annotations
 
@@ -20,6 +32,8 @@ import numpy as np
 import pandas as pd
 
 from backtest.costs import CostModel
+
+_WEIGHT_TOLERANCE = 1e-9
 
 
 @dataclass
@@ -40,74 +54,119 @@ class BacktestEngine:
         cost_model: CostModel,
         initial_capital: float = 100_000.0,
         execution_lag: int = 1,
+        max_gross_exposure: float = 1.0,
     ):
         if execution_lag < 1:
             raise ValueError(
                 "execution_lag must be >= 1: executing on the same bar a "
                 "signal was computed from is a look-ahead risk."
             )
+        if not 0 < max_gross_exposure <= 1.0:
+            raise ValueError("max_gross_exposure must be in (0, 1]: leverage is not allowed")
         self.cost_model = cost_model
         self.initial_capital = initial_capital
         self.execution_lag = execution_lag
+        self.max_gross_exposure = max_gross_exposure
+
+    def _validate_weights(self, target_weights: pd.DataFrame) -> None:
+        values = target_weights.to_numpy(dtype=float)
+        if np.isinf(values).any():
+            raise ValueError("target_weights contains infinite values")
+        if (np.nan_to_num(values) < -_WEIGHT_TOLERANCE).any():
+            raise ValueError("target_weights has negative weights: shorting is not allowed")
+        gross = np.nansum(values, axis=1)
+        if (gross > self.max_gross_exposure + _WEIGHT_TOLERANCE).any():
+            worst = target_weights.index[int(np.argmax(gross))]
+            raise ValueError(
+                f"target_weights row sums exceed max_gross_exposure="
+                f"{self.max_gross_exposure} (max {gross.max():.4f} at {worst}): "
+                f"leverage is not allowed"
+            )
 
     def run(self, close_wide: pd.DataFrame, target_weights: pd.DataFrame) -> BacktestResult:
         if not close_wide.index.equals(target_weights.index):
             raise ValueError("close_wide and target_weights must share the same index")
+        if not close_wide.columns.equals(target_weights.columns):
+            raise ValueError("close_wide and target_weights must share the same columns")
         if not close_wide.index.is_monotonic_increasing:
             raise ValueError("close_wide index must be chronologically sorted")
+        self._validate_weights(target_weights)
 
-        symbols = close_wide.columns
         # Shift weights forward by execution_lag: the weight computed at row
         # t is only actually applied at row t + execution_lag.
-        applied_weights = target_weights.shift(self.execution_lag)
+        applied = np.nan_to_num(target_weights.shift(self.execution_lag).to_numpy(dtype=float))
+        prices = close_wide.to_numpy(dtype=float)
+        n, m = prices.shape
+        rate = self.cost_model.cost_rate
 
-        n = len(close_wide)
-        cash = self.initial_capital
-        quantities = pd.Series(0.0, index=symbols)
+        cash = float(self.initial_capital)
+        quantities = np.zeros(m)
+        last_price = np.full(m, np.nan)
 
-        portfolio_values = np.full(n, np.nan)
+        portfolio_values = np.empty(n)
         fees = np.zeros(n)
-        realized_weights = pd.DataFrame(0.0, index=close_wide.index, columns=symbols)
-        trade_notional = pd.DataFrame(0.0, index=close_wide.index, columns=symbols)
+        realized_weights = np.zeros((n, m))
+        trade_notional = np.zeros((n, m))
 
         for i in range(n):
-            prices = close_wide.iloc[i]
-            valid = prices.notna()
+            p = prices[i]
+            tradable = np.isfinite(p) & (p > 0)
+            last_price = np.where(tradable, p, last_price)
+            # Positions are marked at the last known price; an asset that has
+            # never had a price can only have a zero position.
+            mark = np.nan_to_num(last_price)
 
-            position_value = (quantities * prices.fillna(0.0))
-            pre_trade_value = cash + position_value.sum()
+            current_value = quantities * mark
+            equity = cash + current_value.sum()
 
-            target = applied_weights.iloc[i].fillna(0.0)
-            target = target.where(valid, 0.0)  # can't hold what has no price
+            # Positions in untradable assets are frozen; only the rest of
+            # equity is available for the tradable targets.
+            frozen_value = current_value[~tradable].sum()
+            target = np.where(tradable, applied[i], 0.0)
+            desired = np.where(tradable, target * equity, current_value)
+            fee = rate * np.abs(desired - current_value).sum()
 
-            desired_value = target * pre_trade_value
-            current_value = position_value
-            delta_value = desired_value - current_value
+            budget = equity - frozen_value
+            spend = desired[tradable].sum()
+            if spend > 0 and spend + fee > budget:
+                # Scale buys down until spend + fees fits the budget. Fees are
+                # a small fraction of notional, so this fixed-point iteration
+                # converges in a handful of steps.
+                base = target * equity
+                scale = 1.0
+                for _ in range(20):
+                    scale = max(budget - fee, 0.0) / spend
+                    desired = np.where(tradable, base * scale, current_value)
+                    new_fee = rate * np.abs(desired - current_value).sum()
+                    if abs(new_fee - fee) < 1e-12 * max(equity, 1.0):
+                        fee = new_fee
+                        break
+                    fee = new_fee
+                # Guard the last rounding step so cash can't dip below zero.
+                overshoot = desired[tradable].sum() + fee - budget
+                if overshoot > 0:
+                    desired = np.where(tradable, desired * (1 - overshoot / desired[tradable].sum()), desired)
+                    fee = rate * np.abs(desired - current_value).sum()
 
-            period_fee = 0.0
-            for symbol in symbols:
-                if not valid[symbol]:
-                    continue
-                trade = delta_value[symbol]
-                if abs(trade) < 1e-12:
-                    continue
-                cost = self.cost_model.trade_cost(abs(trade))
-                period_fee += cost
-                quantities[symbol] = desired_value[symbol] / prices[symbol]
-                trade_notional.loc[close_wide.index[i], symbol] = trade
+            delta = np.where(tradable, desired - current_value, 0.0)
+            delta[np.abs(delta) < 1e-12] = 0.0
+            traded = delta != 0.0
+            quantities = np.where(traded, desired / np.where(tradable, p, 1.0), quantities)
+            fee = rate * np.abs(delta).sum()
 
-            cash = pre_trade_value - desired_value.where(valid, current_value).sum() - period_fee
-            post_trade_position_value = (quantities * prices.fillna(0.0)).sum()
-            portfolio_value_t = cash + post_trade_position_value
+            cash = equity - (quantities * mark).sum() - fee
+            post_value = cash + (quantities * mark).sum()
 
-            portfolio_values[i] = portfolio_value_t
-            fees[i] = period_fee
-            if portfolio_value_t > 0:
-                realized_weights.iloc[i] = (quantities * prices.fillna(0.0) / portfolio_value_t).fillna(0.0)
+            portfolio_values[i] = post_value
+            fees[i] = fee
+            trade_notional[i] = delta
+            if post_value > 0:
+                realized_weights[i] = quantities * mark / post_value
 
+        index, columns = close_wide.index, close_wide.columns
         return BacktestResult(
-            portfolio_value=pd.Series(portfolio_values, index=close_wide.index, name="portfolio_value"),
-            weights_history=realized_weights,
-            trade_notional_history=trade_notional,
-            fees_per_period=pd.Series(fees, index=close_wide.index, name="fees"),
+            portfolio_value=pd.Series(portfolio_values, index=index, name="portfolio_value"),
+            weights_history=pd.DataFrame(realized_weights, index=index, columns=columns),
+            trade_notional_history=pd.DataFrame(trade_notional, index=index, columns=columns),
+            fees_per_period=pd.Series(fees, index=index, name="fees"),
         )

@@ -96,6 +96,15 @@ Two independent guards:
    from data through bar `t` is only ever filled at bar `t + execution_lag`,
    never at bar `t`'s own price.
 
+### Backtest accounting
+
+`BacktestEngine` rejects negative target weights and rows summing above
+100% (no shorting, no leverage), never lets cash go negative to pay fees
+(buys are scaled down instead), and treats a missing price as "can't trade
+this bar": the position is held and marked at its last known price rather
+than valued at zero. Sortino uses the standard downside deviation
+(`backtest/metrics.py::downside_deviation`).
+
 ### No historical OHLCV from Roostoo
 
 Roostoo's API has no historical-candle endpoint — only a live ticker

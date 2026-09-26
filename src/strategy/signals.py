@@ -75,17 +75,23 @@ def cross_sectional_momentum(close_wide: pd.DataFrame, lookback: int = 96, top_k
 
 def mean_reversion(close_wide: pd.DataFrame, lookback: int = 12, z_entry: float = 1.5) -> pd.DataFrame:
     """Long an asset when its short-term return z-score is below -z_entry
-    (oversold), scaled down as it reverts back toward the mean. Never shorts
-    an "overbought" asset — long-only, so overbought just means flat."""
-    weights = pd.DataFrame(0.0, index=close_wide.index, columns=close_wide.columns)
+    (oversold). Position intensity grows with how oversold it is — 0.5 at
+    exactly z = -z_entry, 1.0 at z <= -2*z_entry — so it shrinks as the asset
+    reverts toward the mean and goes flat once z is back above -z_entry.
+
+    Intensities are per asset; when several assets are oversold at once the
+    row is scaled down so total exposure never exceeds 100% (no leverage).
+    Never shorts an "overbought" asset — long-only, so overbought means flat."""
+    intensity = pd.DataFrame(0.0, index=close_wide.index, columns=close_wide.columns)
     for symbol in close_wide.columns:
         ret = mom.returns(close_wide[symbol], lookback)
         z = (ret - ret.rolling(lookback, min_periods=lookback).mean()) / ret.rolling(
             lookback, min_periods=lookback
         ).std()
-        oversold = (-z).clip(lower=0.0) / z_entry
-        weights[symbol] = oversold.where(z < -z_entry, 0.0).clip(upper=1.0)
-    return weights
+        scaled = (-z / (2.0 * z_entry)).clip(lower=0.0, upper=1.0)
+        intensity[symbol] = scaled.where(z < -z_entry, 0.0)
+    gross = intensity.sum(axis=1)
+    return intensity.div(gross.where(gross > 1.0, 1.0), axis=0)
 
 
 def volatility_filtered_momentum(
@@ -94,10 +100,11 @@ def volatility_filtered_momentum(
     vol_lookback: int = 96,
     vol_percentile_cutoff: float = 0.8,
 ) -> pd.DataFrame:
-    """Cross-sectional momentum, but an asset is excluded whenever its own
-    realized-vol percentile is above `vol_percentile_cutoff` (i.e. skip
-    assets currently in a high-volatility regime, regardless of how strong
-    their momentum looks)."""
+    """Equal-weight every asset with positive trailing momentum, excluding
+    any asset whose own realized-vol percentile is above
+    `vol_percentile_cutoff` (i.e. skip assets currently in a high-volatility
+    regime, regardless of how strong their momentum looks). Absolute, not
+    top-k, momentum."""
     momentum_wide = pd.DataFrame(
         {symbol: mom.returns(close_wide[symbol], momentum_lookback) for symbol in close_wide.columns}
     )

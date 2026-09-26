@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 
@@ -22,27 +23,58 @@ class PortfolioConstraints:
 def volatility_scaled_weights(scores: pd.Series, volatility: pd.Series) -> pd.Series:
     """raw_weight_i = signal_i / volatility_i, per Phase 12. Assets with zero
     or missing volatility are excluded rather than divided-by-zero."""
-    vol = volatility.replace(0.0, pd.NA)
+    vol = volatility.where(volatility > 0)
     raw = scores / vol
     return raw.dropna()
 
 
 def normalize_weights(raw_weights: pd.Series, constraints: PortfolioConstraints) -> pd.Series:
-    """Clip to per-asset max, scale down to respect gross exposure, and
-    (if long_only) drop negative raw weights entirely rather than shorting."""
-    weights = raw_weights.copy()
+    """Turn raw weights into constrained target weights.
+
+    1. If long_only, drop negative raw weights (flat, never short).
+    2. If gross exposure exceeds the budget (max_gross_exposure less the
+       cash floor), scale everything down proportionally to fit it. Raw
+       weights under budget are kept as-is — a weak signal stays small.
+    3. Cap each asset at max_asset_weight. When step 2 scaled down (the
+       signal wanted the full budget), the excess above the cap is
+       redistributed pro rata over the uncapped assets; whatever can't be
+       placed without breaching a cap stays in cash.
+
+    Scaling happens before capping so relative sizes survive: raw weights
+    like signal/volatility are often >> 1, and capping those first would
+    flatten every asset to the same max weight.
+    """
+    weights = raw_weights.astype(float).copy()
 
     if constraints.long_only:
         weights = weights.clip(lower=0.0)
 
-    weights = weights.clip(upper=constraints.max_asset_weight)
-
+    budget = constraints.max_gross_exposure * (1.0 - constraints.cash_weight_floor)
     gross = weights.abs().sum()
-    max_gross = constraints.max_gross_exposure * (1.0 - constraints.cash_weight_floor)
-    if gross > max_gross and gross > 0:
-        weights = weights * (max_gross / gross)
+    fill_budget = gross > budget and gross > 0
+    if fill_budget:
+        weights = weights * (budget / gross)
 
-    return weights
+    cap = constraints.max_asset_weight
+    if not fill_budget:
+        return weights.clip(lower=-cap, upper=cap)
+
+    # Water-filling: repeatedly pin assets at the cap and hand their excess
+    # to the rest, in proportion to their current weights.
+    values = weights.to_numpy(copy=True)
+    capped = np.zeros(len(values), dtype=bool)
+    for _ in range(len(values)):
+        over = (np.abs(values) > cap + 1e-12) & ~capped
+        if not over.any():
+            break
+        capped |= over
+        values[capped] = np.sign(values[capped]) * cap
+        remaining = budget - np.abs(values[capped]).sum()
+        free_total = np.abs(values[~capped]).sum()
+        if remaining <= 0 or free_total <= 0:
+            break
+        values[~capped] *= remaining / free_total
+    return pd.Series(values, index=weights.index)
 
 
 def apply_rebalance_threshold(

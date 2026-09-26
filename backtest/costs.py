@@ -17,18 +17,22 @@ class CostModel:
     slippage_bps: float = 5.0
     maker_fill_probability: float = 0.0  # backtests can't know maker/taker in advance
 
-    def trade_cost(self, notional: float) -> float:
-        """Total cost in currency units for a trade of the given absolute
-        notional value, blending maker/taker by `maker_fill_probability` and
-        adding slippage on top."""
-        if notional <= 0:
-            return 0.0
+    @property
+    def cost_rate(self) -> float:
+        """Cost per unit of traded notional: maker/taker fee blended by
+        `maker_fill_probability`, plus slippage."""
         blended_fee = (
             self.maker_fill_probability * self.maker_fee
             + (1 - self.maker_fill_probability) * self.taker_fee
         )
-        slippage_cost = notional * (self.slippage_bps / 10_000.0)
-        return notional * blended_fee + slippage_cost
+        return blended_fee + self.slippage_bps / 10_000.0
+
+    def trade_cost(self, notional: float) -> float:
+        """Total cost in currency units for a trade of the given absolute
+        notional value."""
+        if notional <= 0:
+            return 0.0
+        return notional * self.cost_rate
 
 
 # Scenario presets for Phase 7's required sensitivity analysis. "base" mirrors

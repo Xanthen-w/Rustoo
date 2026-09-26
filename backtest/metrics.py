@@ -35,13 +35,26 @@ def sharpe_ratio(returns: pd.Series, periods_per_year: float, risk_free_rate: fl
     return float(excess.mean() / std * np.sqrt(periods_per_year))
 
 
-def sortino_ratio(returns: pd.Series, periods_per_year: float, risk_free_rate: float = 0.0) -> float:
-    excess = returns - risk_free_rate / periods_per_year
-    downside = excess[excess < 0]
-    downside_std = downside.std(ddof=1) if len(downside) > 1 else 0.0
-    if not downside_std or np.isnan(downside_std):
+def downside_deviation(returns: pd.Series, target: float = 0.0) -> float:
+    """Root-mean-square of shortfalls below `target`, averaged over *all*
+    periods (periods at or above target count as zero shortfall) — the
+    standard Sortino denominator. Not the std of the negative returns alone,
+    which measures dispersion among losses rather than their size."""
+    returns = returns.dropna()
+    if len(returns) == 0:
         return 0.0
-    return float(excess.mean() / downside_std * np.sqrt(periods_per_year))
+    shortfall = np.minimum(returns.to_numpy() - target, 0.0)
+    return float(np.sqrt(np.mean(shortfall**2)))
+
+
+def sortino_ratio(returns: pd.Series, periods_per_year: float, risk_free_rate: float = 0.0) -> float:
+    """Annualized mean excess return over downside deviation. Returns 0.0
+    when there is no downside at all (same guard as sharpe_ratio)."""
+    excess = (returns - risk_free_rate / periods_per_year).dropna()
+    dd = downside_deviation(excess)
+    if dd == 0 or np.isnan(dd):
+        return 0.0
+    return float(excess.mean() / dd * np.sqrt(periods_per_year))
 
 
 def max_drawdown(portfolio_value: pd.Series) -> float:

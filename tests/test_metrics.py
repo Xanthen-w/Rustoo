@@ -70,3 +70,16 @@ def test_trade_stats_empty_series():
     stats = metrics.trade_stats(pd.Series(dtype=float))
     assert stats["num_trades"] == 0
     assert stats["win_rate"] == 0.0
+
+
+def test_sortino_uses_downside_deviation_over_all_periods():
+    returns = pd.Series([0.02, -0.01, 0.03, -0.02])
+    # downside deviation = sqrt(mean([0, 0.01^2, 0, 0.02^2])) = sqrt(0.000125)
+    expected = returns.mean() / np.sqrt(0.000125) * np.sqrt(252)
+    assert metrics.sortino_ratio(returns, periods_per_year=252) == pytest.approx(expected)
+
+
+def test_sortino_single_losing_period_is_not_zero():
+    # The old std-of-negatives version returned 0 with fewer than 2 losses.
+    returns = pd.Series([0.01, 0.02, -0.01, 0.015])
+    assert metrics.sortino_ratio(returns, periods_per_year=252) > 0
