@@ -202,4 +202,5 @@ The live bot can also build its own bars from repeated ticker polling
 - Maker (LIMIT) execution to cut fees from 0.10% to 0.05% where fills allow.
 - Shorting in downtrends, if the competition allows it: the largest remaining lever,
   given both evaluation periods were falling markets.
-- The holdout split (Jun–Sep 2026) is still unused: one final evaluation before go-live.
+- The holdout split (Jun–Sep 2026) has been used, once (results in `docs/STRATEGY.md`);
+  further strategy changes are judged on train/validation or live results only.

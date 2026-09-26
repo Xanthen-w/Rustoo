@@ -32,7 +32,7 @@ requires trades on at least 8 days (`docs/COMPETITION_RULES.md`). So the design 
 
 Data: Binance spot 5-minute klines resampled to 1h (`src/data/binance.py`), 2024-09-26 → 2026-09-26.
 Costs: 0.10% fee + 5 bps slippage per trade. Chronological splits (`config/research.yaml`):
-train → 2026-01-01, validation → 2026-06-01, holdout test after, **not yet used**.
+train → 2026-01-01, validation → 2026-06-01, holdout test after (**used once**, see below).
 
 1. **Hourly alpha strategies fail after costs.** A walk-forward search (`scripts/walk_forward.py`)
    covered 7 families and 142 parameter sets: cross-sectional momentum, EMA trend following, mean reversion,
@@ -51,6 +51,44 @@ train → 2026-01-01, validation → 2026-06-01, holdout test after, **not yet u
    | validation | **this strategy** | **−1.3%** | **−7.1%** | **−11.0%** | **100%** |
 
    It was selected on train from a 48-point sweep and a 24-point follow-up, then run once on validation.
+
+## Holdout evaluation (run once, 2026-09-27)
+
+The holdout split (2026-06-01 → 2026-09-26, 118 days) was evaluated exactly once, after the
+strategy and all its parameters were fixed, with nothing changed afterwards. It was a rising
+market: BTC went from $73.7k to $84.1k (+14%) and ETH from $2,007 to $2,692 (+34%).
+Base costs unless noted.
+
+**Continuous run over the whole holdout**
+
+| | return | max drawdown | Sharpe | Sortino | Calmar | composite | avg exposure | trading days |
+|---|---|---|---|---|---|---|---|---|
+| **this strategy** | **+32.4%** | **−6.6%** | **3.00** | **4.80** | 21.2 | **9.18** | 66% | 118 / 118 |
+| this strategy, pessimistic costs | +32.0% | −6.6% | 2.97 | 4.75 | 20.8 | 9.04 | 66% | 118 / 118 |
+| 50/50 BTC+ETH buy-and-hold | +23.5% | −22.7% | 1.66 | 2.45 | 4.1 | 2.71 | 100% | 1 |
+| BTC buy-and-hold | +13.7% | −21.2% | 1.18 | 1.75 | 2.3 | 1.75 | 100% | 1 |
+
+**Every 14-day window from cash (104 windows)**
+
+| | mean return | median | P(return > 0) | 10th pct | worst | worst drawdown | windows with ≥ 8 trading days |
+|---|---|---|---|---|---|---|---|
+| **this strategy** | **+3.9%** | +0.6% | 62.5% | **−1.9%** | **−4.3%** | **−6.6%** | **100%** |
+| 50/50 BTC+ETH buy-and-hold | +4.6% | +2.0% | 67.3% | −3.8% | −13.1% | −21.7% | 0% |
+| BTC buy-and-hold | +3.2% | +1.0% | 57.7% | −4.5% | −11.6% | −19.7% | 0% |
+
+Reading it honestly:
+- It behaved as designed. It kept most of the upside of a rising market (a third of its
+  gain over the reference comes from holding ETH, which outperformed), at about a third of
+  buy-and-hold's drawdown, and it traded every day.
+- Over the continuous 4 months it beat 50/50 BTC+ETH. That comes from sidestepping a
+  drawdown, not from higher exposure: it averaged 66% invested.
+- In a *typical* 14-day window, simply holding 50/50 BTC+ETH returned a bit more (median +2.0%
+  vs +0.6%). The strategy's advantage is the much thinner bad tail (worst −4.3% vs −13.1%),
+  which the composite score rewards.
+- Composite scores over a 4-month run are inflated by annualization (Calmar 21). Compare
+  them across rows, not as absolute numbers.
+- **No untouched data remains.** Any further change to the strategy is judged only on
+  train and validation, or on live results.
 
 ## Honest limitations
 

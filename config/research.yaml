@@ -16,6 +16,8 @@ splits:
   test:
     start: "2026-06-01"
     end: null   # through the end of available data
+    # USED ONCE on 2026-09-27 for the final evaluation of the selected
+    # strategy (docs/STRATEGY.md). It is no longer unseen data.
 
 # Walk-forward optimisation inside a split: pick parameters on each rolling
 # in-sample window, score them on the following out-of-sample window.
