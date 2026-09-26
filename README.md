@@ -128,6 +128,32 @@ exports are IST and labelled by bar start; Binance by open time). `data/` is
 gitignored: market data, especially licensed Bloomberg data, must never be
 committed.
 
+### Research protocol: train / validation / holdout
+
+`config/research.yaml` splits the history chronologically (never shuffled):
+
+| split | window | use |
+|---|---|---|
+| train | 2024-09-26 → 2026-01-01 | idea development, walk-forward parameter search |
+| validation | 2026-01-01 → 2026-06-01 | choosing between finalists |
+| test (holdout) | 2026-06-01 → end | **one** final evaluation of the chosen strategy |
+
+`backtest/splits.py::load_split_panel` never loads bars past the requested
+split's end, and refuses the holdout unless explicitly allowed (scripts:
+`--use-holdout`). Indicators warm up on the data before a split; only the
+split's own window is scored.
+
+```bash
+.venv/bin/python scripts/run_baselines.py --split train          # fixed-parameter baselines
+.venv/bin/python scripts/walk_forward.py --split train           # walk-forward search over config/research.yaml grids
+```
+
+`scripts/walk_forward.py` picks parameters on each rolling in-sample window
+and trades them on the next unseen window; the stitched out-of-sample record
+is the honest estimate. `BacktestEngine(rebalance_threshold=...)` skips
+trades smaller than the band (exits always execute) and is searched as a
+parameter, since trading costs dominate at hourly frequency.
+
 The live bot can also build its own bars from repeated ticker polling
 (`src/data/roostoo_data.py::TickerBarBuilder`).
 

@@ -1,9 +1,13 @@
 """Run every baseline strategy on historical data under each cost scenario
 and rank them by the competition's composite score.
 
-    python scripts/run_baselines.py                           # all pairs in data/binance/5m, hourly bars
-    python scripts/run_baselines.py --resample 4h --start 2025-06-01
+    python scripts/run_baselines.py                            # train split, all pairs, hourly bars
+    python scripts/run_baselines.py --split validation --resample 4h
     python scripts/run_baselines.py --pairs BTC/USD ETH/USD SOL/USD --out research/experiments/baselines.csv
+
+Splits come from config/research.yaml. Indicators warm up on data before the
+split; only the split's own window is scored. The holdout (`--split test`)
+is refused unless --use-holdout is given — use it once, at the very end.
 
 Strategy parameters come from config/strategy.yaml and are in *bars* of the
 chosen (resampled) interval.
@@ -27,7 +31,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from backtest import metrics  # noqa: E402
 from backtest.costs import SCENARIOS  # noqa: E402
 from backtest.engine import BacktestEngine  # noqa: E402
-from src.data.historical import ParquetDataSource, load_panel  # noqa: E402
+from backtest.splits import load_split_panel, load_splits  # noqa: E402
+from src.data.historical import ParquetDataSource  # noqa: E402
 from src.strategy import signals  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -59,11 +64,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data", type=Path, default=REPO_ROOT / "data" / "binance" / "5m")
     parser.add_argument("--pairs", nargs="*", help="Default: every pair with a data file.")
-    parser.add_argument("--start", default="2000-01-01")
-    parser.add_argument("--end", default="2100-01-01")
+    parser.add_argument("--split", default="train", choices=["train", "validation", "test"])
+    parser.add_argument("--use-holdout", action="store_true", help="Required for --split test.")
     parser.add_argument("--resample", default="1h", help="Bar size to trade on, e.g. 5min, 1h, 4h. 'none' keeps source bars.")
     parser.add_argument("--benchmark", default="BTC/USD")
     parser.add_argument("--capital", type=float, default=100_000.0)
+    parser.add_argument("--rebalance-threshold", type=float, default=0.0)
     parser.add_argument("--max-staleness-days", type=float, default=2.0,
                         help="Drop pairs whose last bar is this many days before the panel's end.")
     parser.add_argument("--strategy-config", type=Path, default=REPO_ROOT / "config" / "strategy.yaml")
@@ -79,36 +85,35 @@ def main() -> int:
         pairs = [args.benchmark, *pairs]
 
     resample = None if args.resample.lower() == "none" else args.resample
-    close = load_panel(source, pairs, args.start, args.end, resample=resample)
-    close = close.dropna(how="all")
-
-    # A pair whose data stops well before the panel ends was delisted from
-    # the source exchange. The engine would carry any position in it frozen
-    # at its last price forever, so drop it from the universe instead.
-    last_seen = close.apply(lambda s: s.last_valid_index())
-    stale = last_seen[last_seen < close.index[-1] - pd.Timedelta(days=args.max_staleness_days)]
-    if len(stale):
-        print("Excluding pairs whose data ends early (delisted?): "
-              + ", ".join(f"{p} (last {t:%Y-%m-%d})" for p, t in stale.items()))
-        close = close.drop(columns=stale.index)
+    split = load_splits()[args.split]
+    panel = load_split_panel(source, pairs, split, resample=resample, allow_holdout=args.use_holdout,
+                             max_staleness_days=args.max_staleness_days)
+    close = panel.close
+    if panel.dropped_pairs:
+        print("Excluded: " + ", ".join(f"{p} ({why})" for p, why in sorted(panel.dropped_pairs.items())))
     if args.benchmark not in close.columns:
-        print(f"Benchmark {args.benchmark} has no usable data.")
+        print(f"Benchmark {args.benchmark} has no usable data in this split.")
         return 1
-    bar_seconds = close.index.to_series().diff().median().total_seconds()
+
+    eval_index = panel.eval_index
+    bar_seconds = eval_index.to_series().diff().median().total_seconds()
     periods_per_year = SECONDS_PER_YEAR / bar_seconds
     max_trades_per_bar = max(int(bar_seconds // 60), 1)
 
     print(
-        f"{len(close.columns)} pairs, {len(close)} bars of {pd.Timedelta(seconds=bar_seconds)} "
-        f"({close.index[0]:%Y-%m-%d} -> {close.index[-1]:%Y-%m-%d}), periods/year={periods_per_year:.0f}"
+        f"split={split.name}: {len(close.columns)} pairs, {len(eval_index)} bars of {pd.Timedelta(seconds=bar_seconds)} "
+        f"({eval_index[0]:%Y-%m-%d} -> {eval_index[-1]:%Y-%m-%d}), periods/year={periods_per_year:.0f}"
     )
 
     params = yaml.safe_load(args.strategy_config.read_text()) or {}
     rows = []
     for name, fn in build_strategies(params, args.benchmark).items():
-        weights = fn(close)
+        # Weights use the warm-up history; only the split window is traded.
+        weights = fn(close).reindex(index=close.index, columns=close.columns).fillna(0.0).loc[eval_index]
+        window_close = close.loc[eval_index]
         for scenario, cost_model in SCENARIOS.items():
-            result = BacktestEngine(cost_model, initial_capital=args.capital).run(close, weights)
+            engine = BacktestEngine(cost_model, initial_capital=args.capital, rebalance_threshold=args.rebalance_threshold)
+            result = engine.run(window_close, weights)
             summary = metrics.summarize(result.portfolio_value, result.weights_history, result.total_fees, periods_per_year)
             trades_per_bar = (result.trade_notional_history != 0).sum(axis=1)
             rows.append(

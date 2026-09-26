@@ -119,3 +119,16 @@ def volatility_filtered_momentum(
     n_active = eligible.sum(axis=1).replace(0, pd.NA)
     weights = eligible.div(n_active, axis=0).fillna(0.0)
     return weights
+
+
+# Name -> strategy function, for config-driven research (parameter grids in
+# config/research.yaml call these with keyword arguments).
+STRATEGIES = {
+    "buy_and_hold": buy_and_hold,
+    "equal_weight": equal_weight,
+    "trend_following": trend_following,
+    "single_asset_momentum": single_asset_momentum,
+    "cross_sectional_momentum": cross_sectional_momentum,
+    "mean_reversion": mean_reversion,
+    "volatility_filtered_momentum": volatility_filtered_momentum,
+}

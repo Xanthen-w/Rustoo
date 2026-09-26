@@ -1,0 +1,66 @@
+# Research protocol: chronological data splits + walk-forward settings.
+#
+# Splits are half-open [start, end): a bar belongs to the split containing
+# its UTC close time. They must never be shuffled — returns are serially
+# dependent. `test` is the holdout: evaluate the final strategy on it once,
+# never use it to choose anything (scripts refuse it without an explicit
+# --use-holdout flag).
+
+splits:
+  train:
+    start: "2024-09-26"
+    end: "2026-01-01"
+  validation:
+    start: "2026-01-01"
+    end: "2026-06-01"
+  test:
+    start: "2026-06-01"
+    end: null   # through the end of available data
+
+# Walk-forward optimisation inside a split: pick parameters on each rolling
+# in-sample window, score them on the following out-of-sample window.
+walk_forward:
+  split: train
+  resample: "1h"
+  in_sample_days: 120
+  out_of_sample_days: 30
+  step_days: 30
+  anchored: false          # true = in-sample window always starts at the split start
+  objective: composite_score
+  cost_scenario: base
+
+# Parameter grids per strategy (keys are the function's keyword arguments in
+# src/strategy/signals.py::STRATEGIES; lookbacks are in bars of `resample`).
+# `engine.rebalance_threshold` is searched alongside the strategy params.
+grids:
+  trend_following:
+    params:
+      fast_span: [24, 48, 96]
+      slow_span: [120, 240, 480]
+    engine:
+      rebalance_threshold: [0.0, 0.05, 0.10]
+  cross_sectional_momentum:
+    params:
+      lookback: [72, 168, 336]
+      top_k: [3, 5, 10]
+    engine:
+      rebalance_threshold: [0.0, 0.05, 0.10]
+  single_asset_momentum:
+    params:
+      symbol: ["BTC/USD"]
+      lookback: [72, 168, 336]
+    engine:
+      rebalance_threshold: [0.0]
+  volatility_filtered_momentum:
+    params:
+      momentum_lookback: [72, 168, 336]
+      vol_lookback: [168]
+      vol_percentile_cutoff: [0.7, 0.9]
+    engine:
+      rebalance_threshold: [0.0, 0.05, 0.10]
+  mean_reversion:
+    params:
+      lookback: [24, 72]
+      z_entry: [1.5, 2.0, 2.5]
+    engine:
+      rebalance_threshold: [0.0, 0.05, 0.10]

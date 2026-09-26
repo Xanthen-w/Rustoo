@@ -23,6 +23,10 @@ Accounting rules:
 - Trades are sized so that cash never goes negative after fees: when a
   target would spend more than the available equity once costs are
   included, all buys are scaled down proportionally.
+- `rebalance_threshold` (turnover control): an asset is only traded when
+  |target weight - current weight| >= the threshold; below it the position
+  is left to drift. A target of zero is always executed in full, so exits
+  are never blocked by the band.
 """
 from __future__ import annotations
 
@@ -55,6 +59,7 @@ class BacktestEngine:
         initial_capital: float = 100_000.0,
         execution_lag: int = 1,
         max_gross_exposure: float = 1.0,
+        rebalance_threshold: float = 0.0,
     ):
         if execution_lag < 1:
             raise ValueError(
@@ -63,10 +68,13 @@ class BacktestEngine:
             )
         if not 0 < max_gross_exposure <= 1.0:
             raise ValueError("max_gross_exposure must be in (0, 1]: leverage is not allowed")
+        if not 0.0 <= rebalance_threshold < 1.0:
+            raise ValueError("rebalance_threshold must be in [0, 1)")
         self.cost_model = cost_model
         self.initial_capital = initial_capital
         self.execution_lag = execution_lag
         self.max_gross_exposure = max_gross_exposure
+        self.rebalance_threshold = rebalance_threshold
 
     def _validate_weights(self, target_weights: pd.DataFrame) -> None:
         values = target_weights.to_numpy(dtype=float)
@@ -118,6 +126,12 @@ class BacktestEngine:
 
             current_value = quantities * mark
             equity = cash + current_value.sum()
+
+            if self.rebalance_threshold > 0 and equity > 0:
+                # Inside the band: leave the position alone this bar (treated
+                # exactly like an untradable asset below). Exits always trade.
+                drift = np.abs(applied[i] - current_value / equity)
+                tradable = tradable & ((drift >= self.rebalance_threshold) | (applied[i] == 0))
 
             # Positions in untradable assets are frozen; only the rest of
             # equity is available for the tradable targets.
