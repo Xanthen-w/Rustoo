@@ -137,12 +137,23 @@ Two independent guards:
 
 ### Backtest accounting
 
-`BacktestEngine` rejects negative target weights and rows summing above
-100% (no shorting, no leverage), never lets cash go negative to pay fees
-(buys are scaled down instead), and treats a missing price as "can't trade
-this bar": the position is held and marked at its last known price rather
-than valued at zero. Sortino uses the standard downside deviation
-(`backtest/metrics.py::downside_deviation`).
+`BacktestEngine` (`backtest/engine.py`):
+
+- **Execution timing is explicit.** A signal from bar *t* fills at bar *t + execution_lag*, at
+  that bar's **close** (default) or **open** (`execution_price="open"`, closest to the live bot,
+  which trades minutes after each hourly bar closes).
+- **Costs are itemised** (`backtest/costs.py`): fee (maker/taker mix), half of a modeled spread,
+  modeled slippage, and modeled market impact (`k · participation^α`, only with volume data,
+  never fabricated). Every fill is logged with its costs and participation (`result.fills`).
+- **Gross vs net:** `result.gross_pnl` is the mark-to-market P&L of the positions actually held;
+  `result.gross_value` is the same trades with no costs deducted. Tests enforce
+  `final − initial = Σ gross P&L − Σ costs` to floating-point precision.
+- It rejects negative targets and rows above 100% (no shorting, no leverage), never lets cash
+  go negative to pay costs (buys are scaled down), and treats a missing price as "can't trade
+  this bar": the position is held and marked at its last price.
+- Sortino uses the standard downside deviation (`backtest/metrics.py::downside_deviation`).
+
+Planned upgrades and the decisions behind them: [`docs/BACKTESTER_PLAN.md`](docs/BACKTESTER_PLAN.md).
 
 ### Historical data
 

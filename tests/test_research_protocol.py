@@ -135,3 +135,29 @@ def test_rebalance_threshold_never_blocks_exit():
     result = BacktestEngine(FREE, rebalance_threshold=0.02).run(close, weights)
     assert result.weights_history["A"].iloc[1] == pytest.approx(0.03)  # entry >= threshold
     assert result.weights_history["A"].iloc[3] == 0.0  # exit to zero executes despite < threshold
+
+
+def test_walk_forward_training_never_sees_the_future():
+    """Leakage test: make the data after the first training window massively
+    favour a different candidate (a violent trend only long lookbacks ride).
+    If any post-training data leaked into fold 0's selection, its choice or
+    in-sample scores would change."""
+    idx = pd.date_range("2025-01-01 01:00", periods=24 * 90, freq="1h", tz="UTC")
+    rng = np.random.default_rng(7)
+    close = pd.DataFrame({s: 100 * np.cumprod(1 + rng.normal(0.0, 0.01, len(idx))) for s in "ABC"}, index=idx)
+    cands = expand_grid("cross_sectional_momentum", {"params": {"lookback": [6, 24, 96], "top_k": [1, 2]}})
+    folds = make_folds(idx[0], idx[-1] + pd.Timedelta(hours=1), pd.Timedelta(days=30), pd.Timedelta(days=15),
+                       pd.Timedelta(days=15))
+    base = run_walk_forward(close, cands, folds, FREE, 8766)
+
+    future = close.copy()
+    after = future.index >= folds[0].is_end
+    future.loc[after, "A"] = future.loc[after, "A"] * np.linspace(1, 50, after.sum())  # huge trend in A
+    future.loc[after, ["B", "C"]] = future.loc[after, ["B", "C"]] * np.linspace(1, 0.1, after.sum())[:, None]
+    leaked = run_walk_forward(future, cands, folds, FREE, 8766)
+
+    assert leaked.folds.loc[0, "chosen"] == base.folds.loc[0, "chosen"]
+    fold0 = lambda r: r.candidate_scores[r.candidate_scores.fold == 0].set_index("candidate")["is_score"]
+    pd.testing.assert_series_equal(fold0(base), fold0(leaked))
+    # ...while the out-of-sample results do change: the mutation is real.
+    assert not np.isclose(leaked.folds.loc[0, "oos_return"], base.folds.loc[0, "oos_return"])

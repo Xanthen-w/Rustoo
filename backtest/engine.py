@@ -12,6 +12,26 @@ single most common source of accidental look-ahead in naive backtests.
 Nothing here uses `close_wide` values beyond the bar being executed at any
 point in the loop.
 
+Execution timing (`execution_price`), made explicit:
+
+- "close" (default): the order from bar t's signal fills at the close of
+  bar t + execution_lag.
+- "open": it fills at the *open* of bar t + execution_lag. With lag 1 that
+  is the first price after the signal bar closes — what the live bot does,
+  since it trades minutes after each hourly bar closes. Requires `open_wide`.
+
+Gross vs net P&L. Each bar's mark-to-market P&L of the positions actually
+held is recorded (`gross_pnl`: from the previous mark to the execution
+price with the old holdings, then to the close with the new holdings),
+separately from trading costs (`costs`: fee / spread / slippage / impact,
+see backtest/costs.py). The accounting identity
+
+    final equity - initial capital = sum(gross_pnl) - sum(costs)
+
+holds to floating-point precision and is enforced by tests. The gross
+curve is the *same trades* without costs deducted (not a re-run with zero
+costs, which would trade differently).
+
 Accounting rules:
 
 - Long-only, no leverage: target weights must be >= 0 and each row must sum
@@ -52,7 +72,7 @@ def size_orders(
     current_value: np.ndarray,
     tradable: np.ndarray,
     equity: float,
-    cost_rate: float,
+    cost_rate,
 ) -> np.ndarray:
     """Desired post-trade position values for one bar.
 
@@ -60,7 +80,8 @@ def size_orders(
     current value. Tradable assets go to target * equity, unless that plus
     fees would spend more than the equity not tied up in frozen positions —
     then all tradable targets are scaled down together so cash never goes
-    negative.
+    negative. `cost_rate` is a scalar or a per-asset array (market impact
+    differs by asset).
     """
     frozen_value = current_value[~tradable].sum()
     # Clamped: with every position frozen and cash at ~0 this can come out a
@@ -68,7 +89,7 @@ def size_orders(
     budget = max(equity - frozen_value, 0.0)
     base = np.where(tradable, target_weights, 0.0) * equity
     desired = np.where(tradable, base, current_value)
-    fee = cost_rate * np.abs(desired - current_value).sum()
+    fee = (cost_rate * np.abs(desired - current_value)).sum()
     spend = desired[tradable].sum()
     if spend <= 0 or spend + fee <= budget:
         return desired
@@ -78,7 +99,7 @@ def size_orders(
     for _ in range(20):
         scale = max(budget - fee, 0.0) / spend
         desired = np.where(tradable, base * scale, current_value)
-        new_fee = cost_rate * np.abs(desired - current_value).sum()
+        new_fee = (cost_rate * np.abs(desired - current_value)).sum()
         converged = abs(new_fee - fee) < 1e-12 * max(equity, 1.0)
         fee = new_fee
         if converged:
@@ -99,9 +120,25 @@ class BacktestResult:
     fees_per_period: pd.Series
     total_fees: float = field(init=False)
     exposure: pd.Series | None = None  # risk-overlay multiplier applied at each bar
+    gross_pnl: pd.Series | None = None  # mark-to-market P&L per bar, before costs
+    costs: pd.DataFrame | None = None  # per-bar fee / spread / slippage / impact
+    fills: pd.DataFrame | None = None  # one row per asset traded per bar
+    initial_capital: float = 100_000.0
 
     def __post_init__(self):
         self.total_fees = float(self.fees_per_period.sum())
+
+    @property
+    def gross_value(self) -> pd.Series:
+        """Equity of the same trades with no costs deducted."""
+        return (self.initial_capital + self.gross_pnl.cumsum()).rename("gross_value")
+
+    @property
+    def net_pnl(self) -> float:
+        return float(self.portfolio_value.iloc[-1] - self.initial_capital)
+
+    def cost_totals(self) -> dict:
+        return {c: float(self.costs[c].sum()) for c in self.costs.columns}
 
 
 class BacktestEngine:
@@ -114,6 +151,7 @@ class BacktestEngine:
         rebalance_threshold: float = 0.0,
         risk_overlay=None,
         rebalance_hours_utc: tuple = (),
+        execution_price: str = "close",
     ):
         if execution_lag < 1:
             raise ValueError(
@@ -130,6 +168,9 @@ class BacktestEngine:
         self.max_gross_exposure = max_gross_exposure
         self.rebalance_threshold = rebalance_threshold
         self.risk_overlay = risk_overlay
+        if execution_price not in {"close", "open"}:
+            raise ValueError("execution_price must be 'close' or 'open'")
+        self.execution_price = execution_price
         self.rebalance_hours_utc = frozenset(int(h) for h in rebalance_hours_utc)
         if any(not 0 <= h < 24 for h in self.rebalance_hours_utc):
             raise ValueError("rebalance_hours_utc must be hours in [0, 24)")
@@ -149,46 +190,73 @@ class BacktestEngine:
                 f"leverage is not allowed"
             )
 
-    def run(self, close_wide: pd.DataFrame, target_weights: pd.DataFrame) -> BacktestResult:
+    def run(
+        self,
+        close_wide: pd.DataFrame,
+        target_weights: pd.DataFrame,
+        open_wide: pd.DataFrame | None = None,
+        volume_wide: pd.DataFrame | None = None,
+    ) -> BacktestResult:
+        """`open_wide` is required for execution_price="open"; `volume_wide`
+        (base-asset volume per bar) enables participation reporting and is
+        required when the cost model uses market impact."""
         if not close_wide.index.equals(target_weights.index):
             raise ValueError("close_wide and target_weights must share the same index")
         if not close_wide.columns.equals(target_weights.columns):
             raise ValueError("close_wide and target_weights must share the same columns")
         if not close_wide.index.is_monotonic_increasing:
             raise ValueError("close_wide index must be chronologically sorted")
+        for name, frame in (("open_wide", open_wide), ("volume_wide", volume_wide)):
+            if frame is not None and not (frame.index.equals(close_wide.index) and frame.columns.equals(close_wide.columns)):
+                raise ValueError(f"{name} must have the same index and columns as close_wide")
+        if self.execution_price == "open" and open_wide is None:
+            raise ValueError("execution_price='open' requires open_wide")
+        if self.cost_model.uses_impact and volume_wide is None:
+            raise ValueError("the cost model uses market impact, which needs volume_wide; "
+                             "impact is never modeled without volume data")
         self._validate_weights(target_weights)
 
         # Shift weights forward by execution_lag: the weight computed at row
         # t is only actually applied at row t + execution_lag.
         applied = np.nan_to_num(target_weights.shift(self.execution_lag).to_numpy(dtype=float))
-        prices = close_wide.to_numpy(dtype=float)
-        n, m = prices.shape
-        rate = self.cost_model.cost_rate
+        closes = close_wide.to_numpy(dtype=float)
+        execs = open_wide.to_numpy(dtype=float) if self.execution_price == "open" else closes
+        volumes = volume_wide.to_numpy(dtype=float) if volume_wide is not None else None
+        n, m = closes.shape
+        cm = self.cost_model
+        base_rate = cm.cost_rate
 
         cash = float(self.initial_capital)
         quantities = np.zeros(m)
         last_price = np.full(m, np.nan)
 
         portfolio_values = np.empty(n)
-        fees = np.zeros(n)
+        total_costs = np.zeros(n)
+        cost_parts = np.zeros((n, 4))  # fee, spread, slippage, impact
+        gross = np.zeros(n)
         realized_weights = np.zeros((n, m))
         trade_notional = np.zeros((n, m))
         exposures = np.ones(n)
         exposure = 1.0
+        fills: list[dict] = []
         if self.risk_overlay is not None:
             self.risk_overlay.reset(cash)
-        index_utc = close_wide.index.tz_convert("UTC") if close_wide.index.tz is not None else close_wide.index
+        index = close_wide.index
+        index_utc = index.tz_convert("UTC") if index.tz is not None else index
         scheduled = np.isin(index_utc.hour, list(self.rebalance_hours_utc)) if self.rebalance_hours_utc else np.zeros(n, bool)
+        columns = list(close_wide.columns)
 
         for i in range(n):
-            p = prices[i]
-            tradable = np.isfinite(p) & (p > 0)
-            last_price = np.where(tradable, p, last_price)
-            # Positions are marked at the last known price; an asset that has
-            # never had a price can only have a zero position.
-            mark = np.nan_to_num(last_price)
+            pc, pe = closes[i], execs[i]
+            close_ok = np.isfinite(pc) & (pc > 0)
+            tradable = close_ok & np.isfinite(pe) & (pe > 0)
+            # Mark held positions at the execution price (last known price for
+            # anything untradable this bar); an asset never priced has no position.
+            prev_mark = np.nan_to_num(last_price)
+            exec_mark = np.where(tradable, pe, prev_mark)
+            gross_pnl = (quantities * (exec_mark - prev_mark)).sum()
 
-            current_value = quantities * mark
+            current_value = quantities * exec_mark
             equity = cash + current_value.sum()
             target_row = applied[i] * exposure
             exposures[i] = exposure
@@ -199,32 +267,69 @@ class BacktestEngine:
                 drift = np.abs(target_row - current_value / equity)
                 tradable = tradable & ((drift >= self.rebalance_threshold) | (target_row == 0))
 
-            desired = size_orders(target_row, current_value, tradable, equity, rate)
+            if volumes is not None:
+                bar_notional = np.nan_to_num(volumes[i]) * np.where(tradable, pe, 0.0)
+                intended = np.abs(np.where(tradable, target_row * equity - current_value, 0.0))
+                participation = np.divide(intended, bar_notional, out=np.full(m, np.nan), where=bar_notional > 0)
+            else:
+                participation = np.full(m, np.nan)
+            impact_rate = cm.impact_rate(np.nan_to_num(participation, nan=0.0)) if cm.uses_impact else np.zeros(m)
+            if cm.uses_impact and np.any(tradable & (np.nan_to_num(volumes[i]) <= 0) & (np.abs(target_row * equity - current_value) > 1e-9)):
+                # A trade in a bar with zero recorded volume: impact can't be
+                # modeled from data, so refuse rather than assume zero.
+                raise ValueError(f"market impact needs positive volume; zero volume at {index[i]}")
+            rates = base_rate + impact_rate
+
+            desired = size_orders(target_row, current_value, tradable, equity, rates)
 
             delta = np.where(tradable, desired - current_value, 0.0)
-            delta[np.abs(delta) < 1e-12] = 0.0
+            # Float residue from re-deriving values (~1e-11 at $100k) is not a
+            # trade; without this, dust fills pollute trade counts and days.
+            delta[np.abs(delta) < 1e-9 * max(equity, 1.0)] = 0.0
             traded = delta != 0.0
-            quantities = np.where(traded, desired / np.where(tradable, p, 1.0), quantities)
-            fee = rate * np.abs(delta).sum()
+            quantities_new = np.where(traded, desired / np.where(tradable, pe, 1.0), quantities)
+            abs_delta = np.abs(delta)
+            parts = np.stack([cm.fee_rate * abs_delta, cm.spread_rate * abs_delta,
+                              cm.slippage_rate * abs_delta, impact_rate * abs_delta])
+            bar_cost = parts.sum()
 
-            cash = equity - (quantities * mark).sum() - fee
-            post_value = cash + (quantities * mark).sum()
+            cash = equity - (quantities_new * exec_mark).sum() - bar_cost
+            quantities = quantities_new
+            last_price = np.where(close_ok, pc, last_price)
+            close_mark = np.nan_to_num(last_price)
+            gross_pnl += (quantities * (close_mark - exec_mark)).sum()
+            post_value = cash + (quantities * close_mark).sum()
             if not np.isfinite(post_value):
-                raise RuntimeError(f"non-finite portfolio value at {close_wide.index[i]}; engine state is corrupt")
+                raise RuntimeError(f"non-finite portfolio value at {index[i]}; engine state is corrupt")
             if self.risk_overlay is not None:
                 exposure = float(self.risk_overlay.update(post_value))
 
             portfolio_values[i] = post_value
-            fees[i] = fee
+            total_costs[i] = bar_cost
+            cost_parts[i] = parts.sum(axis=1)
+            gross[i] = gross_pnl
             trade_notional[i] = delta
             if post_value > 0:
-                realized_weights[i] = quantities * mark / post_value
+                realized_weights[i] = quantities * close_mark / post_value
+            for j in np.flatnonzero(traded):
+                fills.append({
+                    "timestamp": index[i], "symbol": columns[j], "side": "BUY" if delta[j] > 0 else "SELL",
+                    "quantity": abs(delta[j]) / pe[j], "price": pe[j], "notional": abs_delta[j],
+                    "fee": parts[0, j], "spread": parts[1, j], "slippage": parts[2, j], "impact": parts[3, j],
+                    "cost": parts[:, j].sum(), "participation": participation[j],
+                    "scheduled": bool(scheduled[i]),
+                })
 
-        index, columns = close_wide.index, close_wide.columns
+        fill_columns = ["timestamp", "symbol", "side", "quantity", "price", "notional", "fee", "spread",
+                        "slippage", "impact", "cost", "participation", "scheduled"]
         return BacktestResult(
             portfolio_value=pd.Series(portfolio_values, index=index, name="portfolio_value"),
-            weights_history=pd.DataFrame(realized_weights, index=index, columns=columns),
-            trade_notional_history=pd.DataFrame(trade_notional, index=index, columns=columns),
-            fees_per_period=pd.Series(fees, index=index, name="fees"),
+            weights_history=pd.DataFrame(realized_weights, index=index, columns=close_wide.columns),
+            trade_notional_history=pd.DataFrame(trade_notional, index=index, columns=close_wide.columns),
+            fees_per_period=pd.Series(total_costs, index=index, name="fees"),
             exposure=pd.Series(exposures, index=index, name="exposure") if self.risk_overlay is not None else None,
+            gross_pnl=pd.Series(gross, index=index, name="gross_pnl"),
+            costs=pd.DataFrame(cost_parts, index=index, columns=["fee", "spread", "slippage", "impact"]),
+            fills=pd.DataFrame(fills, columns=fill_columns),
+            initial_capital=float(self.initial_capital),
         )
