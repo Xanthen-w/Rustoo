@@ -12,7 +12,7 @@ ranked by return and then `0.4·Sortino + 0.3·Sharpe + 0.3·Calmar`.
 | 1 | Explicit execution timing (next-bar open/close, latency); itemised costs (fee, spread, slippage, market impact); gross vs net P&L with reconciliation tests; fills ledger with participation; engine-level causality test; walk-forward leakage test | **done** |
 | 2 | Full metrics (drawdown episodes and recovery, VaR/CVaR, monthly returns, rolling Sharpe/vol, exposure, FIFO trade table and stats); benchmarks + random-entry baseline; self-contained HTML report with interactive charts + JSON/CSV export | **done** |
 | 3 | Cost/slippage sensitivity, stress scenarios and worst case; Monte Carlo block bootstrap with multiple seeds (14-day outcome distributions); regime analysis; parameter heatmaps (full landscape); random-entry test on every split | **done** |
-| 4 | Excel/CSV importer with alias-based column detection and a validation report (library + CLI); run registry (run ID, config/dataset hashes, git commit), frozen forward-test mode | planned |
+| 4 | Excel/CSV importer with alias-based column detection and a validation report (library + CLI); run registry (run ID, config/dataset hashes, git commit), reproduce command, frozen forward-test mode | **done** |
 
 ## Rejected or deferred
 
@@ -76,3 +76,18 @@ Selected strategy, validation split (Jan–May 2026), next-bar-open fills, base 
   0.63% vs best 0.91%), a moderate plateau. On validation every cell is negative and the best
   cell moves elsewhere, so the optimum isn't stable across periods. `min_exposure = 0` scores
   best in both, since the floor costs return, but the floor is there for the ≥8-trading-days rule.
+
+## Findings from step 4
+
+- **Importer vs the Bloomberg exports** (`scripts/import_data.py data/raw/bloomberg/*.xlsx --tz
+  Asia/Kolkata --labelled-by start --reference data/binance/5m`): it rejects exactly the two
+  known-bad files with no manual input. BNB has almost no weekend bars and sits 9,989 bps from
+  Binance's BNB. USDC has prices identical to the XRP file; XRP matches the reference, so XRP is
+  kept and USDC rejected. Monero is imported with a warning about its 10-day gap, USDT with a
+  "mostly flat" warning, and BTC, ETH, SOL, TRX, ZEC and DOGE cleanly (3–6 bps from Binance).
+- **Bug found by the tests:** a column already in datetime format was converted to nanosecond
+  integers and treated as epoch timestamps, so the source timezone was silently ignored (a 5.5h
+  error for IST data). Excel imports weren't affected (cells arrive as datetime objects). Fixed,
+  with a test.
+- **Reproducibility check on real data:** a validation-split report registered as
+  `backtest-…-fce2bab9` was re-run by `scripts/runs.py reproduce` and every number matched.

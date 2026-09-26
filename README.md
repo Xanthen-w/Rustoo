@@ -196,7 +196,27 @@ split's own window is scored.
 .venv/bin/python scripts/window_analysis.py --split train        # every 14-day window from cash (the competition horizon)
 .venv/bin/python scripts/backtest_report.py --split validation   # full HTML report + CSV/JSON exports for the live strategy
 .venv/bin/python scripts/robustness_report.py --split validation # costs, stress, Monte Carlo, regimes, parameter landscapes, random entry
+.venv/bin/python scripts/runs.py list                            # experiment history (every report run gets a run ID)
+.venv/bin/python scripts/runs.py reproduce <run-id>              # re-run it and check every number matches
 ```
+
+**Importing your own data** (Excel/CSV, e.g. Bloomberg exports):
+
+```bash
+.venv/bin/python scripts/import_data.py data/raw/bloomberg/*.xlsx --source bloomberg \
+    --tz Asia/Kolkata --labelled-by start --reference data/binance/5m
+```
+
+Columns are detected from common aliases (a wrong or ambiguous guess stops with the `--map` to
+pass). Every file gets a validation report: duplicates, gaps, OHLC consistency, non-24/7 trading,
+extreme moves, identical content across files, and a price cross-check against a reference.
+Clean files land in `data/imported/<source>/` in the same format the backtester reads; the
+dataset library is `data/imported/library.json`.
+
+**Forward testing:** `scripts/forward_test.py freeze --name <name>` snapshots the live
+configuration and the data cut-off into `research/forward/<name>.json` (commit it). Later,
+`scripts/forward_test.py evaluate --name <name>` tests that frozen configuration only on data
+that arrived after the freeze, with no parameter overrides possible.
 
 `scripts/backtest_report.py` writes `research/experiments/reports/<run>/report.html`: a single
 self-contained page (works offline) with gross vs net equity, itemised costs, drawdown episodes,
