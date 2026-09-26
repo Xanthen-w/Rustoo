@@ -10,7 +10,7 @@ ranked by return and then `0.4·Sortino + 0.3·Sharpe + 0.3·Calmar`.
 | Step | Scope | Status |
 |---|---|---|
 | 1 | Explicit execution timing (next-bar open/close, latency); itemised costs (fee, spread, slippage, market impact); gross vs net P&L with reconciliation tests; fills ledger with participation; engine-level causality test; walk-forward leakage test | **done** |
-| 2 | Full metrics (drawdown episodes and recovery, VaR/CVaR, monthly returns, rolling Sharpe/vol, exposure, per-sale P&L stats); benchmarks + random-entry baseline; self-contained HTML report with interactive charts + JSON/CSV export | planned |
+| 2 | Full metrics (drawdown episodes and recovery, VaR/CVaR, monthly returns, rolling Sharpe/vol, exposure, FIFO trade table and stats); benchmarks + random-entry baseline; self-contained HTML report with interactive charts + JSON/CSV export | **done** |
 | 3 | Cost/slippage sensitivity, stress scenarios and worst case; Monte Carlo block bootstrap with multiple seeds (14-day outcome distributions); regime analysis; parameter heatmaps (full landscape) | planned |
 | 4 | Excel/CSV importer with alias-based column detection and a validation report (library + CLI); run registry (run ID, config/dataset hashes, git commit), frozen forward-test mode | planned |
 
@@ -35,3 +35,17 @@ ranked by return and then `0.4·Sortino + 0.3·Sharpe + 0.3·Calmar`.
   strategy still has a fill of at least $10 on 148/151 validation days and 115/118 holdout days.
   Its typical daily rebalance fill is small, though (median ~$170–300 on $100k). Whether judges
   consider that "enough trades each day" is an open question.
+
+## Findings from step 2
+
+- **Buy-and-hold basket bug (caught before use):** "never rebalance" had been expressed as a
+  99.9% rebalance band, which also blocked the initial 50% entry, so the equal-weight benchmark
+  never invested. Benchmarks now follow the passive basket's drifting weights with a 1% band;
+  a test checks they buy exactly once and track the passive holdings.
+- **Validation split, selected strategy (next-bar-open fills, base costs):** net −13.0%
+  (gross −12.0%, costs $923) vs BTC −15.8%, ETH −32.4%, 50/50 basket −24.1%; max drawdown
+  −19.3% vs −41.0% for the basket.
+- **Random-entry baseline on validation:** with the strategy's own exposure levels and switching
+  rate but random timing, the strategy beat only 60% of 20 seeds on return and 50% on Sharpe
+  (median random −17.4%). In that period the smaller losses came mainly from *sizing*
+  (about 50% average exposure), not from the trend filter's timing.

@@ -194,7 +194,15 @@ split's own window is scored.
 .venv/bin/python scripts/run_baselines.py --split train          # fixed-parameter baselines
 .venv/bin/python scripts/walk_forward.py --split train           # walk-forward search over config/research.yaml grids
 .venv/bin/python scripts/window_analysis.py --split train        # every 14-day window from cash (the competition horizon)
+.venv/bin/python scripts/backtest_report.py --split validation   # full HTML report + CSV/JSON exports for the live strategy
 ```
+
+`scripts/backtest_report.py` writes `research/experiments/reports/<run>/report.html`: a single
+self-contained page (works offline) with gross vs net equity, itemised costs, drawdown episodes,
+monthly returns, rolling Sharpe/volatility, exposure, a FIFO trade table, tail risk (VaR/CVaR),
+14-day window distributions, benchmarks, a random-entry baseline, statistical context,
+limitations and reproducibility info. Next to it: `summary.json`, `config.json`, `equity.csv`,
+`fills.csv`, `trades.csv`, `open_positions.csv`, `drawdowns.csv`, `random_entry.csv`.
 
 `scripts/walk_forward.py` picks parameters on each rolling in-sample window
 and trades them on the next unseen window; the stitched out-of-sample record

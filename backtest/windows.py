@@ -50,12 +50,18 @@ def evaluate_windows(
     periods_per_year: float,
     engine_params: dict | None = None,
     initial_capital: float = 100_000.0,
+    open_wide: pd.DataFrame | None = None,
+    volume_wide: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """One row per window: the strategy run from cash at the window start."""
+    """One row per window: the strategy run from cash at the window start.
+    Pass `open_wide` when engine_params select execution_price="open", and
+    `volume_wide` when the cost model uses market impact."""
     # Only columns the strategy ever holds matter to the engine; dropping the
     # rest makes this ~10x faster on a wide panel without changing results.
     active = weights.columns[(weights != 0).any()]
     close, weights = close[active], weights[active]
+    open_wide = open_wide[active] if open_wide is not None else None
+    volume_wide = volume_wide[active] if volume_wide is not None else None
     rows = []
     for w in windows:
         mask = (close.index >= w.start) & (close.index < w.end)
@@ -65,7 +71,11 @@ def evaluate_windows(
                          "sortino_ratio": 0.0, "calmar_ratio": 0.0, "max_drawdown": 0.0,
                          "trading_days": 0, "trades": 0, "fees": 0.0})
             continue
-        result = build_engine(cost_model, engine_params or {}, initial_capital).run(wc, ww)
+        result = build_engine(cost_model, engine_params or {}, initial_capital).run(
+            wc, ww,
+            open_wide=open_wide[mask] if open_wide is not None else None,
+            volume_wide=volume_wide[mask] if volume_wide is not None else None,
+        )
         s = metrics.summarize(result.portfolio_value, result.weights_history, result.total_fees, periods_per_year)
         traded = (result.trade_notional_history != 0).any(axis=1)
         rows.append({

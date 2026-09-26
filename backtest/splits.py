@@ -119,3 +119,22 @@ def load_split_panel(
             dropped[pair] = f"data ends {series.index[-1]:%Y-%m-%d}"
     close = close.drop(columns=list(dropped))
     return SplitPanel(close=close, split=split, dropped_pairs=dropped)
+
+
+def load_split_fields(
+    source: HistoricalDataSource,
+    panel: SplitPanel,
+    fields: tuple[str, ...] = ("open", "volume"),
+    *,
+    resample: str | None = "1h",
+    data_start: str = "2000-01-01",
+) -> dict[str, pd.DataFrame]:
+    """Other OHLCV fields aligned to an already-loaded SplitPanel (same bars,
+    same pairs, same truncation at the split end)."""
+    split = panel.split
+    end = split.end - pd.Timedelta(microseconds=1) if split.end is not None else "2100-01-01"
+    out = {}
+    for field in fields:
+        frame = load_panel(source, list(panel.close.columns), data_start, end, field=field, resample=resample)
+        out[field] = frame.reindex(index=panel.close.index, columns=panel.close.columns)
+    return out

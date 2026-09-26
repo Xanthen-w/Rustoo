@@ -38,8 +38,20 @@ trend_vol_target:
   target_vol: 0.5      # annualized, split across assets
   min_exposure: 0.15   # share of vol-target size kept when out of trend
 
+# Researcher's hypothesis for the live strategy (shown in reports as a
+# hypothesis, separate from the evidence).
+strategy_notes:
+  hypothesis: >-
+    Crypto majors trend over weeks; staying out of assets below their 40-day
+    trend and sizing by volatility should cut the left tail (drawdowns and
+    downside volatility, which the competition score penalizes) more than it
+    costs in missed upside. Expected to fail in fast V-shaped reversals and
+    in choppy markets around the trend line, and it cannot profit from
+    falling prices.
+
 execution_policy:
   bar: "1h"
+  execution_price: open         # backtests: fill at the open of the bar after the signal (closest to the live bot)
   rebalance_threshold: 0.05     # skip trades smaller than 5% weight drift...
   rebalance_hours_utc: [0]      # ...except the daily 00:00 UTC exact rebalance
   risk_overlay: false           # drawdown overlay hurt in walk-forward (whipsaw)
