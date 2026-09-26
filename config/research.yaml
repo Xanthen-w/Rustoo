@@ -26,13 +26,39 @@ walk_forward:
   out_of_sample_days: 30
   step_days: 30
   anchored: false          # true = in-sample window always starts at the split start
-  objective: composite_score
+  # Selection metric per in-sample window. Not composite_score: its Calmar
+  # term annualises short-window returns and explodes on one good month.
+  objective: sortino_ratio
   cost_scenario: base
 
 # Parameter grids per strategy (keys are the function's keyword arguments in
 # src/strategy/signals.py::STRATEGIES; lookbacks are in bars of `resample`).
 # `engine.rebalance_threshold` is searched alongside the strategy params.
 grids:
+  # Benchmark, with and without the drawdown overlay, on identical windows.
+  buy_and_hold:
+    params:
+      symbol: ["BTC/USD"]
+    engine:
+      rebalance_threshold: [0.05]
+      risk:
+        - null
+        - {caution: 0.05, defensive: 0.10, emergency: 0.20, cooldown_bars: 72}
+        - {caution: 0.08, defensive: 0.15, emergency: 0.25, cooldown_bars: 168}
+  # Risk-managed BTC/ETH core (Phases 10-13): per-asset trend filter with
+  # hysteresis, inverse-vol sizing to a volatility target, drawdown overlay.
+  trend_vol_target:
+    params:
+      assets: [["BTC/USD", "ETH/USD"], ["BTC/USD"]]
+      trend_span: [72, 168, 336]
+      band: [0.0, 0.02]
+      target_vol: [0.3, 0.5]
+      vol_lookback: [168]
+    engine:
+      rebalance_threshold: [0.05]
+      risk:
+        - null
+        - {caution: 0.05, defensive: 0.10, emergency: 0.20, cooldown_bars: 72}
   trend_following:
     params:
       fast_span: [24, 48, 96]

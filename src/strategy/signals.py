@@ -121,6 +121,45 @@ def volatility_filtered_momentum(
     return weights
 
 
+def _bars_per_year(index: pd.DatetimeIndex) -> float:
+    """Sampling frequency of the panel (metadata, not price information)."""
+    step = index.to_series().diff().median()
+    return 365.25 * 24 * 3600 / step.total_seconds()
+
+
+def trend_vol_target(
+    close_wide: pd.DataFrame,
+    assets: tuple = ("BTC/USD", "ETH/USD"),
+    trend_span: int = 168,
+    band: float = 0.02,
+    vol_lookback: int = 168,
+    target_vol: float = 0.4,
+    max_weight: float = 1.0,
+) -> pd.DataFrame:
+    """Risk-managed core: hold each of `assets` only while it is in an
+    uptrend (EMA trend with a hysteresis `band`, see features.trend.trend_state),
+    sized so each contributes `target_vol / len(assets)` of annualized
+    volatility (inverse-vol sizing, capped at `max_weight`), with total
+    exposure capped at 100% and the rest in cash.
+
+    Aims at the competition score rather than raw return: being flat in
+    downtrends cuts drawdown (Calmar) and downside deviation (Sortino).
+    """
+    weights = pd.DataFrame(0.0, index=close_wide.index, columns=close_wide.columns)
+    present = [a for a in assets if a in close_wide.columns]
+    if not present:
+        return weights
+    bars_per_year = _bars_per_year(close_wide.index)
+    for asset in present:
+        close = close_wide[asset]
+        in_trend = trend_feat.trend_state(close, trend_span, band)
+        vol = vol_feat.realized_vol(close, vol_lookback, annualize_periods_per_year=bars_per_year)
+        size = (target_vol / len(present) / vol).clip(upper=max_weight)
+        weights[asset] = (in_trend * size).fillna(0.0)
+    gross = weights.sum(axis=1)
+    return weights.div(gross.where(gross > 1.0, 1.0), axis=0)
+
+
 # Name -> strategy function, for config-driven research (parameter grids in
 # config/research.yaml call these with keyword arguments).
 STRATEGIES = {
@@ -131,4 +170,5 @@ STRATEGIES = {
     "cross_sectional_momentum": cross_sectional_momentum,
     "mean_reversion": mean_reversion,
     "volatility_filtered_momentum": volatility_filtered_momentum,
+    "trend_vol_target": trend_vol_target,
 }

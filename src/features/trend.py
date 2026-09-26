@@ -28,3 +28,17 @@ def ema_crossover_signal(close: pd.Series, fast_span: int, slow_span: int) -> pd
     signal = (fast > slow).astype(float) * 2 - 1
     signal[fast.isna() | slow.isna()] = float("nan")
     return signal
+
+
+def trend_state(close: pd.Series, span: int, band: float = 0.0) -> pd.Series:
+    """1.0 while in an uptrend, 0.0 otherwise, with hysteresis: switches on
+    when close > EMA * (1 + band), off when close < EMA * (1 - band), and
+    otherwise keeps its previous state — so a price hovering around the EMA
+    doesn't flip the position every bar. 0.0 until the EMA is warmed up.
+    Causal: the state at t depends only on closes <= t."""
+    e = ema(close, span)
+    state = pd.Series(float("nan"), index=close.index)
+    state[close > e * (1.0 + band)] = 1.0
+    state[close < e * (1.0 - band)] = 0.0
+    state[e.isna()] = 0.0
+    return state.ffill().fillna(0.0)

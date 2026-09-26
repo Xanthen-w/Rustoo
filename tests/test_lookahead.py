@@ -36,6 +36,7 @@ CUTOFF = 200  # truncate here; then mutate the future tail wildly
         lambda df: signals.cross_sectional_momentum(df, lookback=24, top_k=2),
         lambda df: signals.mean_reversion(df, lookback=12, z_entry=1.0),
         lambda df: signals.volatility_filtered_momentum(df, momentum_lookback=24, vol_lookback=24),
+        lambda df: signals.trend_vol_target(df, assets=("BTC/USD", "ETH/USD"), trend_span=24, vol_lookback=24),
     ],
 )
 def test_strategy_output_unaffected_by_future_data(strategy_fn):

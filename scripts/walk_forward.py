@@ -9,6 +9,11 @@ objective, then trade it on the next out-of-sample window. The stitched
 out-of-sample record is the honest estimate of that strategy family. Also
 prints how much in-sample scores overstate out-of-sample ones, and which
 parameter sets get picked — unstable picks mean the edge is noise.
+
+Selection uses `walk_forward.objective` (default sortino_ratio). The
+composite score is only reported on the stitched record: its Calmar term
+annualises the window's return, so on a 30-day window a single good month
+produces scores in the hundreds and swamps any comparison.
 """
 from __future__ import annotations
 
@@ -56,7 +61,7 @@ def main() -> int:
         pd.Timedelta(days=wf["step_days"]), anchored=wf.get("anchored", False),
     )
     cost_model = SCENARIOS[wf.get("cost_scenario", "base")]
-    objective = wf.get("objective", "composite_score")
+    objective = wf.get("objective", "sortino_ratio")
     print(f"split={split.name}: {len(close.columns)} pairs, {len(eval_index)} bars, {len(folds)} folds "
           f"({wf['in_sample_days']}d in-sample / {wf['out_of_sample_days']}d out-of-sample, "
           f"{'anchored' if wf.get('anchored') else 'rolling'}), objective={objective}, costs={wf.get('cost_scenario', 'base')}")
@@ -86,15 +91,18 @@ def main() -> int:
         overview.append({
             "strategy": strategy,
             "candidates": len(candidates),
-            "mean_is_score_of_picks": result.folds["is_score"].mean(),
-            "mean_oos_score_of_picks": result.folds["oos_score"].mean(),
+            f"median_is_{objective}": result.folds["is_score"].median(),
+            f"median_oos_{objective}": result.folds["oos_score"].median(),
             "distinct_picks": result.folds["chosen"].nunique(),
             "oos_return": s["cumulative_return"],
             "oos_max_drawdown": s["max_drawdown"],
+            "oos_sharpe": s["sharpe_ratio"],
+            "oos_sortino": s["sortino_ratio"],
+            "oos_calmar": s["calmar_ratio"],
             "oos_composite": s["composite_score"],
         })
 
-    print("\n##### overview (out-of-sample = stitched walk-forward record)")
+    print("\n##### overview (oos_* = stitched walk-forward out-of-sample record; per-fold scores as medians)")
     print(pd.DataFrame(overview).set_index("strategy").sort_values("oos_composite", ascending=False).round(3).to_string())
     return 0
 

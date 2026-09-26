@@ -25,7 +25,20 @@ portfolio:
   min_trade_threshold: 0.02   # do not trade if |target - current| below this
   cash_weight_floor: 0.0
 
+trend_vol_target:
+  assets: ["BTC/USD", "ETH/USD"]
+  trend_span: 168      # bars
+  band: 0.02           # hysteresis around the EMA
+  vol_lookback: 168
+  target_vol: 0.4      # annualized
+
+# Drawdown state machine (src/risk/drawdown.py): exposure multiplier per
+# state; de-escalates one level after cooldown_bars, re-arming the peak.
 risk:
   drawdown_caution: 0.05
   drawdown_defensive: 0.10
   drawdown_emergency: 0.20
+  caution_exposure: 0.75
+  defensive_exposure: 0.5
+  emergency_exposure: 0.0
+  cooldown_bars: 72

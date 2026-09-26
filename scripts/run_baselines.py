@@ -47,7 +47,16 @@ def build_strategies(params: dict, benchmark: str) -> dict:
     top_k = params.get("cross_sectional", {}).get("top_k", 3)
     mr = params.get("mean_reversion", {})
     vol_lookback = params.get("volatility", {}).get("lookback_periods", 96)
+    core = params.get("trend_vol_target", {})
     return {
+        f"trend_vol_target[{'+'.join(core.get('assets', ['BTC/USD', 'ETH/USD']))},{core.get('trend_span', 168)}]": lambda c: signals.trend_vol_target(
+            c,
+            assets=tuple(core.get("assets", ["BTC/USD", "ETH/USD"])),
+            trend_span=core.get("trend_span", 168),
+            band=core.get("band", 0.02),
+            vol_lookback=core.get("vol_lookback", 168),
+            target_vol=core.get("target_vol", 0.4),
+        ),
         f"buy_and_hold[{benchmark}]": lambda c: signals.buy_and_hold(c, benchmark),
         "equal_weight": signals.equal_weight,
         f"trend_following[{fast}/{slow}]": lambda c: signals.trend_following(c, fast, slow),

@@ -23,7 +23,27 @@ import pandas as pd
 from backtest import metrics
 from backtest.costs import CostModel
 from backtest.engine import BacktestEngine
+from src.risk.drawdown import DrawdownRiskManager
 from src.strategy.signals import STRATEGIES
+
+
+def _freeze(value):
+    """Grid values can be lists/dicts (asset lists, risk settings); make
+    them hashable so candidates can be dict keys."""
+    if isinstance(value, dict):
+        return tuple(sorted((k, _freeze(v)) for k, v in value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(v) for v in value)
+    return value
+
+
+def build_engine(cost_model: CostModel, engine_params: dict, initial_capital: float = 100_000.0) -> BacktestEngine:
+    """`engine_params` may include `risk`: None for no overlay, or a dict
+    of DrawdownRiskManager settings."""
+    params = dict(engine_params)
+    risk = params.pop("risk", None)
+    overlay = DrawdownRiskManager(**dict(risk)) if risk else None
+    return BacktestEngine(cost_model, initial_capital=initial_capital, risk_overlay=overlay, **params)
 
 
 @dataclass(frozen=True)
@@ -69,8 +89,20 @@ class Candidate:
 
     @property
     def label(self) -> str:
-        parts = [f"{k}={v}" for k, v in self.params + self.engine_params]
+        def fmt(v):
+            if isinstance(v, tuple) and v and all(isinstance(x, tuple) and len(x) == 2 for x in v):
+                return "{" + ",".join(f"{k}:{fmt(x)}" for k, x in v) + "}"
+            if isinstance(v, tuple):
+                return "[" + ",".join(map(str, v)) + "]"
+            return str(v)
+        parts = [f"{k}={fmt(v)}" for k, v in self.params + self.engine_params]
         return f"{self.strategy}({', '.join(parts)})"
+
+    def strategy_kwargs(self) -> dict:
+        return {k: (list(v) if isinstance(v, tuple) else v) for k, v in self.params}
+
+    def engine_kwargs(self) -> dict:
+        return {k: (dict(v) if isinstance(v, tuple) and v and isinstance(v[0], tuple) else v) for k, v in self.engine_params}
 
 
 def expand_grid(strategy: str, spec: dict) -> list[Candidate]:
@@ -79,7 +111,7 @@ def expand_grid(strategy: str, spec: dict) -> list[Candidate]:
 
     def combos(grid: dict) -> list[tuple]:
         keys = sorted(grid or {})
-        return [tuple(zip(keys, values)) for values in itertools.product(*(grid[k] for k in keys))]
+        return [tuple(zip(keys, map(_freeze, values))) for values in itertools.product(*(grid[k] for k in keys))]
 
     out = []
     for params in combos(spec.get("params", {})):
@@ -105,7 +137,7 @@ def evaluate_window(
     mask = (close.index >= start) & (close.index < end)
     window_close = close[mask].dropna(axis=1, how="all")
     window_weights = weights.loc[window_close.index, window_close.columns]
-    engine = BacktestEngine(cost_model, initial_capital=initial_capital, **(engine_params or {}))
+    engine = build_engine(cost_model, engine_params or {}, initial_capital)
     result = engine.run(window_close, window_weights)
     summary = metrics.summarize(result.portfolio_value, result.weights_history, result.total_fees, periods_per_year)
     summary["avg_trades_per_bar"] = float((result.trade_notional_history != 0).sum(axis=1).mean())
@@ -132,7 +164,7 @@ def run_walk_forward(
     folds: list[Fold],
     cost_model: CostModel,
     periods_per_year: float,
-    objective: str = "composite_score",
+    objective: str = "sortino_ratio",
     initial_capital: float = 100_000.0,
 ) -> WalkForwardResult:
     weight_cache: dict[tuple, pd.DataFrame] = {}
@@ -144,9 +176,9 @@ def run_walk_forward(
         for cand in candidates:
             key = (cand.strategy, cand.params)
             if key not in weight_cache:
-                weight_cache[key] = _normalise_weights(STRATEGIES[cand.strategy](close, **dict(cand.params)), close)
+                weight_cache[key] = _normalise_weights(STRATEGIES[cand.strategy](close, **cand.strategy_kwargs()), close)
             weights = weight_cache[key]
-            engine_params = dict(cand.engine_params)
+            engine_params = cand.engine_kwargs()
             is_summary, _ = evaluate_window(close, weights, fold.is_start, fold.is_end, cost_model,
                                             periods_per_year, engine_params, initial_capital)
             oos_summary, oos_equity = evaluate_window(close, weights, fold.oos_start, fold.oos_end, cost_model,

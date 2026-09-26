@@ -23,6 +23,10 @@ Accounting rules:
 - Trades are sized so that cash never goes negative after fees: when a
   target would spend more than the available equity once costs are
   included, all buys are scaled down proportionally.
+- `risk_overlay` (optional, e.g. src/risk/drawdown.py::DrawdownRiskManager):
+  multiplies each bar's target weights by an exposure in [0, 1]. It is
+  updated with each bar's *post-trade* equity and its answer applies from
+  the next bar, so sizing never uses the price the trade executes at.
 - `rebalance_threshold` (turnover control): an asset is only traded when
   |target weight - current weight| >= the threshold; below it the position
   is left to drift. A target of zero is always executed in full, so exits
@@ -91,6 +95,7 @@ class BacktestResult:
     trade_notional_history: pd.DataFrame
     fees_per_period: pd.Series
     total_fees: float = field(init=False)
+    exposure: pd.Series | None = None  # risk-overlay multiplier applied at each bar
 
     def __post_init__(self):
         self.total_fees = float(self.fees_per_period.sum())
@@ -104,6 +109,7 @@ class BacktestEngine:
         execution_lag: int = 1,
         max_gross_exposure: float = 1.0,
         rebalance_threshold: float = 0.0,
+        risk_overlay=None,
     ):
         if execution_lag < 1:
             raise ValueError(
@@ -119,6 +125,7 @@ class BacktestEngine:
         self.execution_lag = execution_lag
         self.max_gross_exposure = max_gross_exposure
         self.rebalance_threshold = rebalance_threshold
+        self.risk_overlay = risk_overlay
 
     def _validate_weights(self, target_weights: pd.DataFrame) -> None:
         values = target_weights.to_numpy(dtype=float)
@@ -159,6 +166,10 @@ class BacktestEngine:
         fees = np.zeros(n)
         realized_weights = np.zeros((n, m))
         trade_notional = np.zeros((n, m))
+        exposures = np.ones(n)
+        exposure = 1.0
+        if self.risk_overlay is not None:
+            self.risk_overlay.reset(cash)
 
         for i in range(n):
             p = prices[i]
@@ -170,14 +181,16 @@ class BacktestEngine:
 
             current_value = quantities * mark
             equity = cash + current_value.sum()
+            target_row = applied[i] * exposure
+            exposures[i] = exposure
 
             if self.rebalance_threshold > 0 and equity > 0:
                 # Inside the band: leave the position alone this bar (treated
                 # exactly like an untradable asset below). Exits always trade.
-                drift = np.abs(applied[i] - current_value / equity)
-                tradable = tradable & ((drift >= self.rebalance_threshold) | (applied[i] == 0))
+                drift = np.abs(target_row - current_value / equity)
+                tradable = tradable & ((drift >= self.rebalance_threshold) | (target_row == 0))
 
-            desired = size_orders(applied[i], current_value, tradable, equity, rate)
+            desired = size_orders(target_row, current_value, tradable, equity, rate)
 
             delta = np.where(tradable, desired - current_value, 0.0)
             delta[np.abs(delta) < 1e-12] = 0.0
@@ -189,6 +202,8 @@ class BacktestEngine:
             post_value = cash + (quantities * mark).sum()
             if not np.isfinite(post_value):
                 raise RuntimeError(f"non-finite portfolio value at {close_wide.index[i]}; engine state is corrupt")
+            if self.risk_overlay is not None:
+                exposure = float(self.risk_overlay.update(post_value))
 
             portfolio_values[i] = post_value
             fees[i] = fee
@@ -202,4 +217,5 @@ class BacktestEngine:
             weights_history=pd.DataFrame(realized_weights, index=index, columns=columns),
             trade_notional_history=pd.DataFrame(trade_notional, index=index, columns=columns),
             fees_per_period=pd.Series(fees, index=index, name="fees"),
+            exposure=pd.Series(exposures, index=index, name="exposure") if self.risk_overlay is not None else None,
         )
