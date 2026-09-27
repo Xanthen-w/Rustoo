@@ -49,6 +49,29 @@ print(list(c.get_exchange_info()['TradePairs'].keys())[:5])
 "
 ```
 
+## Research app (local web UI)
+
+```bash
+./run_app.sh            # first run installs the app dependencies, then opens http://localhost:8501
+```
+
+A browser front-end for the backtester, running only on this machine (127.0.0.1, no telemetry,
+no deploy button; see `.streamlit/config.toml`). Pages:
+
+- **Data import:** upload Excel/CSV, get the validation report (✓ / ⚠ / ✕ per file, with
+  reasons), a price chart per imported file, and the dataset library.
+- **Backtest:** choose data source, period (train / validation / holdout / custom range),
+  strategy, coins, parameters, costs and execution, then **Run backtest**. Headline metrics,
+  downloads (summary, trades, fills) and the full interactive report appear on the page.
+- **Robustness:** stress tests, Monte Carlo, regimes, parameter maps and the random-entry test.
+- **Run history:** every run (from the app or the terminal), with its command, configuration and
+  report; **Reproduce** re-runs it and checks every number matches; **Compare** diffs two runs.
+- **Paper bot:** equity curve, wallet, hourly decisions, orders and API health of the running
+  paper bot (read-only).
+
+The app never re-implements research logic: every button runs one of the scripts in `scripts/`
+and shows the exact command, so anything done in the browser can be repeated from the terminal.
+
 ## Running the bot
 
 ```bash

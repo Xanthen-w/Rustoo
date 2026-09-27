@@ -1,0 +1,17 @@
+# Local-only research app: listen on this machine only, no telemetry.
+[server]
+address = "127.0.0.1"
+port = 8501
+headless = false
+maxUploadSize = 200
+
+[browser]
+gatherUsageStats = false
+serverAddress = "localhost"
+
+[theme]
+base = "dark"
+
+[client]
+# Hide the "Deploy" button: this app is local-only and must never be published.
+toolbarMode = "minimal"
