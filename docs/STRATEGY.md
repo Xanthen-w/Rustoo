@@ -90,6 +90,28 @@ Reading it honestly:
 - **No untouched data remains.** Any further change to the strategy is judged only on
   train and validation, or on live results.
 
+## Which coins? (universe comparison, 2026-09-27)
+
+`scripts/universe_comparison.py` ran the live settings on six coin sets fixed up front, using
+14-day windows from cash plus one continuous run, with base costs:
+
+| coins | train: mean 14d | train: worst 14d | train: continuous | train: max DD | windows ≥ 8 trading days | validation: mean 14d | validation: continuous |
+|---|---|---|---|---|---|---|---|
+| BTC | +0.42% | −12.8% | +31.5% | −22.5% | 68% | −0.69% | −8.9% |
+| **BTC+ETH (live)** | **+0.93%** | −12.5% | **+48.6%** | −23.5% | 100% | −1.18% | −13.0% |
+| BTC+ETH+TRX | +0.97% | −10.1% | +45.0% | −29.3% | 100% | +0.39% | +2.1% |
+| BTC+TRX | +0.64% | −9.5% | +30.8% | −32.2% | 100% | +0.75% | +5.3% |
+| Top 5 by liquidity | +0.89% | −11.0% | +46.7% | −21.5% | 100% | −1.51% | −14.0% |
+| Top 10 by liquidity | +0.81% | −9.5% | +44.0% | −20.9% | 100% | −0.78% | −5.1% |
+
+- On **train** (the selection data), BTC+ETH, BTC+ETH+TRX and the top-5 set are statistically
+  indistinguishable. Under the pre-stated rule (choose on train), the live BTC+ETH set stays.
+- BTC alone fails the ≥ 8 trading-days rule in about a third of windows: with one asset, nothing
+  drifts between holdings for the daily rebalance to fix.
+- On **validation**, the TRX sets did clearly better. But TRX was singled out after looking at a
+  table that included validation-period returns, so validation can't confirm it independently.
+  Adding TRX is a judgement call (it's a low-correlation diversifier), not a result.
+
 ## Honest limitations
 
 - **The return edge did not survive validation; the risk reduction did.** In a falling market the
