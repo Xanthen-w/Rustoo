@@ -311,3 +311,47 @@ def test_request_audit_hook_records_every_call():
     with pytest.raises(RoostooAPIError):
         client.get_balance()
     assert store.count("api_calls") >= 1
+
+
+def test_fully_invested_scheduled_rebalance_still_trades():
+    """Regression, from the paper run of 2026-09-27: fully invested with the
+    0.5% cash buffer, the 00:00 UTC rebalance planned no orders because both
+    holdings sat just below their (unscaled) targets and every buy was
+    blocked by the buffer. Wallet and targets are the ones from that run."""
+    tickers = {"BTC/USD": ticker("BTC/USD", 84_560.0), "ETH/USD": ticker("ETH/USD", 2_695.0)}
+    acct = AccountSnapshot(cash_free=500.14, cash_locked=0.0, free={"BTC": 0.6761, "ETH": 15.7877})
+    targets = {"BTC/USD": 0.573, "ETH/USD": 0.427}
+    orders, info = plan_orders(targets, acct, tickers, RULES, rebalance_threshold=0.05, scheduled=True,
+                               fee_rate=0.001, cash_buffer=0.005)
+    assert info["target_scale"] == pytest.approx(0.995)
+    assert {o.side for o in orders} == {"BUY", "SELL"}  # moves weight from the overweight asset to the other
+    assert all(o.notional >= 1.0 for o in orders)  # above Roostoo's MiniOrder
+    # cash after the trades stays at (about) the buffer: never overspent
+    proceeds = sum(o.notional * (1 - 0.001) for o in orders if o.side == "SELL")
+    spend = sum(o.notional * (1 + 0.001) for o in orders if o.side == "BUY")
+    equity = acct.equity(tickers)
+    assert acct.cash_free + proceeds - spend >= 0.005 * equity - 1.0
+    # the same wallet outside the scheduled hour stays inside the band: no trades
+    assert plan_orders(targets, acct, tickers, RULES, rebalance_threshold=0.05, cash_buffer=0.005)[0] == []
+
+
+def test_targets_below_investable_are_not_scaled():
+    acct = AccountSnapshot(cash_free=100_000, cash_locked=0)
+    _, info = plan_orders({"BTC/USD": 0.3, "ETH/USD": 0.3}, acct, TICKERS, RULES, cash_buffer=0.005)
+    assert "target_scale" not in info
+
+
+def test_bot_trades_on_its_own_over_several_fully_invested_days(tmp_path):
+    """End to end: from cash, with scheduled rebalances only, the bot must
+    fill at least one order every UTC day while fully invested."""
+    clock = Clock("2026-10-04 00:04")
+    bot, store = make_bot(tmp_path, clock, activity_fallback_hour_utc=None)
+    # Realistically small daily moves (~0.3%): too small to push either
+    # holding above its unscaled target, which is exactly when the old
+    # planner stopped trading.
+    prices = [(100_000.0, 4_000.0), (100_300.0, 3_990.0), (100_050.0, 4_012.0), (100_350.0, 4_001.0)]
+    for day, (btc, eth) in enumerate(prices):
+        bot.public = FakePublic({"BTC/USD": btc, "ETH/USD": eth})
+        clock.t = pd.Timestamp("2026-10-04 00:04") + pd.Timedelta(days=day)
+        bot.tick()
+    assert len(store.filled_order_days()) == len(prices)

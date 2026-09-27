@@ -117,6 +117,19 @@ def plan_orders(
     if equity <= 0:
         return [], info
 
+    # Targets are fractions of equity, but `cash_buffer` of equity is never
+    # spent. If the targets would need more than the investable remainder,
+    # scale them all down to fit (as the backtest engine scales buys to its
+    # budget). Without this, a fully invested strategy has every holding
+    # permanently a little *below* target, so no rebalance can sell anything
+    # and every buy is blocked by the buffer: no trades at all.
+    investable = 1.0 - cash_buffer
+    gross = sum(targets.values())
+    if gross > investable:
+        scale = investable / gross
+        targets = {pair: w * scale for pair, w in targets.items()}
+        info["target_scale"] = scale
+
     values = account.position_values(tickers)
     pairs = sorted(set(targets) | set(values))
     sells: list[PlannedOrder] = []
