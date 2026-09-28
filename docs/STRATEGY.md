@@ -129,6 +129,29 @@ Every schedule trades on 100% of days. 4× costs about 0.03% of capital per 14 d
 tiny trades for no strategic reason. The tables above were computed with the 1× schedule;
 at 4× those numbers are about 0.03 points lower per 14-day window.
 
+## Shorting (researched 2026-09-28, not adopted)
+
+The organizers confirmed 1x shorts are allowed (losses capped at the collateral, long and short
+in the same pair permitted, no native stops). `scripts/short_research.py` added a short leg to the
+live strategy: short (at 50% or 100% of the normal size) once a coin closes 3/6/10% below its
+40-day EMA, cover back at the EMA; everything else unchanged (6-hourly rebalances, base costs,
+shorts charged 0.1% on open and close). Selection on train, one check on validation.
+
+| variant | train: mean 14d | train: continuous | train: max DD | train: composite | validation: mean 14d | validation: continuous |
+|---|---|---|---|---|---|---|
+| **long-only (live)** | **+0.90%** | **+47.4%** | **−23.8%** | **1.60** | −1.21% | −13.3% |
+| short ×0.5 below −6% (best short on train) | +0.68% | +37.5% | −26.7% | 1.24 | −0.30% | −6.2% |
+| short ×1.0 below −3% | +0.57% | +26.4% | −37.0% | 0.79 | +0.51% | −2.4% |
+
+By regime (BTC trailing 30-day return), train: in **bear** stretches (15% of bars) shorts turned
+−10% into +9% to +49%, but in **sideways** stretches (61% of bars) they deepened losses from −19%
+to −39%/−55%, as shorts entered below the trend and were stopped back out at the EMA over and over.
+Validation (a falling period) looks better for every short variant, but that's the same bear
+effect, and the rule was to choose on train. **Every short variant is worse on train, so the short
+leg is not adopted.** It behaves like a bet that the market will fall, not a robust improvement.
+The largest move against any short was +14%, far from the +100% that would wipe out collateral.
+The engine support (`allow_short`) and `trend_vol_long_short` stay available for research.
+
 ## Honest limitations
 
 - **The return edge did not survive validation; the risk reduction did.** In a falling market the

@@ -169,6 +169,53 @@ def trend_vol_target(
     return weights.div(gross.where(gross > 1.0, 1.0), axis=0)
 
 
+def trend_vol_long_short(
+    close_wide: pd.DataFrame,
+    assets: tuple = ("BTC/USD", "ETH/USD"),
+    trend_span: int = 960,
+    band: float = 0.03,
+    vol_lookback: int = 720,
+    target_vol: float = 0.5,
+    max_weight: float = 1.0,
+    min_exposure: float = 0.15,
+    short_scale: float = 0.5,
+    short_entry: float = 0.06,
+    short_exit: float = 0.0,
+) -> pd.DataFrame:
+    """trend_vol_target plus a short leg (research; needs allow_short=True).
+
+    Long side and sizing are exactly trend_vol_target's. The difference is
+    below the trend: an asset goes short (at `short_scale` of its vol-target
+    size) once its close falls more than `short_entry` below the EMA, and
+    covers once the close is back above EMA * (1 - short_exit). In between
+    (neither long nor short) it holds the `min_exposure` long floor. Gross
+    exposure is capped at 100% (no leverage); shorts are 1x, collateralized.
+    """
+    if not 0.0 <= short_exit < short_entry:
+        raise ValueError("need 0 <= short_exit < short_entry")
+    weights = pd.DataFrame(0.0, index=close_wide.index, columns=close_wide.columns)
+    present = [a for a in assets if a in close_wide.columns]
+    if not present:
+        return weights
+    bars_per_year = _bars_per_year(close_wide.index)
+    for asset in present:
+        close = close_wide[asset]
+        e = trend_feat.ema(close, trend_span)
+        long_on = trend_feat.trend_state(close, trend_span, band)
+        short = pd.Series(float("nan"), index=close.index)
+        short[close < e * (1.0 - short_entry)] = 1.0
+        short[close > e * (1.0 - short_exit)] = 0.0
+        short[e.isna()] = 0.0
+        short_on = short.ffill().fillna(0.0) * (1.0 - long_on)
+        vol = vol_feat.realized_vol(close, vol_lookback, annualize_periods_per_year=bars_per_year)
+        size = (target_vol / len(present) / vol).clip(upper=max_weight)
+        flat = (1.0 - long_on) * (1.0 - short_on)
+        exposure = long_on - short_scale * short_on + min_exposure * flat
+        weights[asset] = (exposure * size).fillna(0.0)
+    gross = weights.abs().sum(axis=1)
+    return weights.div(gross.where(gross > 1.0, 1.0), axis=0)
+
+
 # Name -> strategy function, for config-driven research (parameter grids in
 # config/research.yaml call these with keyword arguments).
 STRATEGIES = {
@@ -180,4 +227,5 @@ STRATEGIES = {
     "mean_reversion": mean_reversion,
     "volatility_filtered_momentum": volatility_filtered_momentum,
     "trend_vol_target": trend_vol_target,
+    "trend_vol_long_short": trend_vol_long_short,
 }

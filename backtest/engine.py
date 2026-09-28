@@ -34,9 +34,12 @@ costs, which would trade differently).
 
 Accounting rules:
 
-- Long-only, no leverage: target weights must be >= 0 and each row must sum
-  to at most `max_gross_exposure` (default 1.0). Violations raise instead of
-  being silently simulated as borrowing.
+- No leverage: each row's gross exposure (sum of |weights|) must be at most
+  `max_gross_exposure` (default 1.0). Long-only by default: negative
+  weights raise unless `allow_short=True`, in which case a negative weight
+  is a 1x short whose notional is covered by collateral (Roostoo's
+  /v6/short_open model; fees as for spot orders). Violations raise instead
+  of being silently simulated as borrowing.
 - A missing (NaN) price means the asset can't be traded on that bar. An
   existing position is carried unchanged and marked at its last known price
   — a data gap is not a loss.
@@ -82,15 +85,19 @@ def size_orders(
     then all tradable targets are scaled down together so cash never goes
     negative. `cost_rate` is a scalar or a per-asset array (market impact
     differs by asset).
+
+    Exposure is measured gross (sum of absolute values): a short uses its
+    notional as collateral, so longs + short collateral + fees must fit in
+    equity (no leverage). For long-only books this is the plain sum.
     """
-    frozen_value = current_value[~tradable].sum()
+    frozen_value = np.abs(current_value[~tradable]).sum()
     # Clamped: with every position frozen and cash at ~0 this can come out a
     # hair below zero from float rounding.
     budget = max(equity - frozen_value, 0.0)
     base = np.where(tradable, target_weights, 0.0) * equity
     desired = np.where(tradable, base, current_value)
     fee = (cost_rate * np.abs(desired - current_value)).sum()
-    spend = desired[tradable].sum()
+    spend = np.abs(desired[tradable]).sum()
     if spend <= 0 or spend + fee <= budget:
         return desired
 
@@ -105,8 +112,8 @@ def size_orders(
         if converged:
             break
     # Absorb the last rounding error so cash can't dip below zero.
-    overshoot = desired[tradable].sum() + fee - budget
-    total = desired[tradable].sum()
+    overshoot = np.abs(desired[tradable]).sum() + fee - budget
+    total = np.abs(desired[tradable]).sum()
     if overshoot > 0 and total > 0:
         desired = np.where(tradable, desired * max(1.0 - overshoot / total, 0.0), desired)
     return desired
@@ -152,6 +159,7 @@ class BacktestEngine:
         risk_overlay=None,
         rebalance_hours_utc: tuple = (),
         execution_price: str = "close",
+        allow_short: bool = False,
     ):
         if execution_lag < 1:
             raise ValueError(
@@ -171,6 +179,7 @@ class BacktestEngine:
         if execution_price not in {"close", "open"}:
             raise ValueError("execution_price must be 'close' or 'open'")
         self.execution_price = execution_price
+        self.allow_short = allow_short
         self.rebalance_hours_utc = frozenset(int(h) for h in rebalance_hours_utc)
         if any(not 0 <= h < 24 for h in self.rebalance_hours_utc):
             raise ValueError("rebalance_hours_utc must be hours in [0, 24)")
@@ -179,9 +188,10 @@ class BacktestEngine:
         values = target_weights.to_numpy(dtype=float)
         if np.isinf(values).any():
             raise ValueError("target_weights contains infinite values")
-        if (np.nan_to_num(values) < -_WEIGHT_TOLERANCE).any():
-            raise ValueError("target_weights has negative weights: shorting is not allowed")
-        gross = np.nansum(values, axis=1)
+        if not self.allow_short and (np.nan_to_num(values) < -_WEIGHT_TOLERANCE).any():
+            raise ValueError("target_weights has negative weights: shorting is not allowed "
+                             "(pass allow_short=True to model 1x collateralized shorts)")
+        gross = np.nansum(np.abs(values), axis=1)
         if (gross > self.max_gross_exposure + _WEIGHT_TOLERANCE).any():
             worst = target_weights.index[int(np.argmax(gross))]
             raise ValueError(
