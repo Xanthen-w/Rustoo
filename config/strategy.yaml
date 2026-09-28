@@ -53,7 +53,11 @@ execution_policy:
   bar: "1h"
   execution_price: open         # backtests: fill at the open of the bar after the signal (closest to the live bot)
   rebalance_threshold: 0.05     # skip trades smaller than 5% weight drift...
-  rebalance_hours_utc: [0]      # ...except the daily 00:00 UTC exact rebalance
+  # ...except exact rebalances at these UTC hours (every 6h). Chosen over
+  # once a day on 2026-09-28 (scripts/rebalance_frequency.py): ~8 fills/day
+  # instead of ~2 for about 0.03% of capital per 14 days, to clearly meet the
+  # competition's "enough trades each day" requirement.
+  rebalance_hours_utc: [0, 6, 12, 18]
   risk_overlay: false           # drawdown overlay hurt in walk-forward (whipsaw)
 
 # Drawdown state machine (src/risk/drawdown.py): exposure multiplier per

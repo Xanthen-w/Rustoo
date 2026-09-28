@@ -271,7 +271,7 @@ def test_scheduled_rebalance_once_per_day_at_midnight(tmp_path):
     clock = Clock("2026-10-04 00:04")
     bot, store = make_bot(tmp_path, clock)
     assert bot.tick()["scheduled"] is True
-    assert store.get("last_scheduled_date") == "2026-10-04"
+    assert store.get("last_scheduled_bar") == "2026-10-04T00:00:00+00:00"
     clock.t = pd.Timestamp("2026-10-04 01:04")
     assert bot.tick()["scheduled"] is False
 
@@ -355,3 +355,17 @@ def test_bot_trades_on_its_own_over_several_fully_invested_days(tmp_path):
         clock.t = pd.Timestamp("2026-10-04 00:04") + pd.Timedelta(days=day)
         bot.tick()
     assert len(store.filled_order_days()) == len(prices)
+
+
+def test_every_configured_rebalance_hour_fires(tmp_path):
+    """4 exact rebalances a day (00/06/12/18 UTC): each of those hourly bars
+    must be a scheduled rebalance, and the hours in between must not be.
+    The first version only allowed one scheduled rebalance per UTC day."""
+    clock = Clock("2026-10-04 00:04")
+    bot, store = make_bot(tmp_path, clock, rebalance_hours_utc=(0, 6, 12, 18), activity_fallback_hour_utc=None)
+    fired = {}
+    for hour in range(24):
+        clock.t = pd.Timestamp("2026-10-04 00:04") + pd.Timedelta(hours=hour)
+        fired[hour] = bot.tick()["scheduled"]
+    assert [h for h, s in fired.items() if s] == [0, 6, 12, 18]
+    assert store.get("last_scheduled_bar") == "2026-10-04T18:00:00+00:00"

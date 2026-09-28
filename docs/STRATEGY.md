@@ -11,8 +11,8 @@ Every hour, for each of BTC and ETH:
    share of a 50% annualized volatility budget, so a calmer asset gets a bigger position. Total exposure
    is capped at 100%, with no leverage.
 3. **Exposure:** full size while in trend, 15% of it while out of trend (`min_exposure`). The rest is cash.
-4. **Execution:** trade only when an asset's weight has drifted at least 5% from target, except at
-   **00:00 UTC every day**, when the portfolio is rebalanced exactly to target.
+4. **Execution:** trade only when an asset's weight has drifted at least 5% from target, except
+   **every 6 hours (00:00, 06:00, 12:00, 18:00 UTC)**, when the portfolio is rebalanced exactly to target.
 
 Parameters are in `config/strategy.yaml`; the code is `src/strategy/signals.py::trend_vol_target`.
 
@@ -26,7 +26,7 @@ requires trades on at least 8 days (`docs/COMPETITION_RULES.md`). So the design 
 - **Low cost.** At 0.1% per taker trade, every hourly strategy we tested lost more to fees than its
   signal earned (see below). A 40-day trend changes state rarely, and the 5% band suppresses small trades.
 - **Daily activity from the strategy's own logic.** The 15% floor means there is always a position,
-  and the daily exact rebalance of that position trades every day.
+  and the exact rebalances every 6 hours trade it back to target (about 8 fills a day).
 
 ## Evidence
 
@@ -111,6 +111,23 @@ Reading it honestly:
 - On **validation**, the TRX sets did clearly better. But TRX was singled out after looking at a
   table that included validation-period returns, so validation can't confirm it independently.
   Adding TRX is a judgement call (it's a low-correlation diversifier), not a result.
+
+## Rebalance schedule (2026-09-28)
+
+The competition requires trades on at least 8 days with "enough trades each day", without a
+number. `scripts/rebalance_frequency.py` compared exact rebalances 1×, 2×, 4×, 6× and 24× a day
+(everything else at the live settings):
+
+| schedule | fills per day | median fill | train return | validation return | mean 14-day return (train / validation) |
+|---|---|---|---|---|---|
+| 1× (00:00) | 2.1 | $197–319 | +48.6% | −13.0% | +0.93% / −1.18% |
+| **4× (00/06/12/18)** | **8.1** | $64–120 | +47.4% | −13.3% | +0.90% / −1.21% |
+| 24× (hourly) | 48 | $19–39 | +45.6% | −13.5% | +0.86% / −1.23% |
+
+Every schedule trades on 100% of days. 4× costs about 0.03% of capital per 14 days against
+1×, in exchange for clearly visible daily activity. Hourly was rejected: it adds hundreds of
+tiny trades for no strategic reason. The tables above were computed with the 1× schedule;
+at 4× those numbers are about 0.03 points lower per 14-day window.
 
 ## Honest limitations
 

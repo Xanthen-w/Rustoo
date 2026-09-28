@@ -10,8 +10,8 @@ Every `poll_seconds`:
      account toward those targets.
 
 Execution policy mirrors the backtest engine: trade an asset only when its
-weight drifts past `rebalance_threshold`, except for the scheduled exact
-rebalance at `rebalance_hours_utc`. If a UTC day reaches
+weight drifts past `rebalance_threshold`, except at the scheduled exact
+rebalances: every hourly bar whose UTC hour is in `rebalance_hours_utc`. If a UTC day reaches
 `activity_fallback_hour_utc` with no filled order, one exact rebalance is
 forced — the competition requires trades on >= 8 days
 (docs/COMPETITION_RULES.md).
@@ -148,7 +148,9 @@ class TradingBot:
             return {"action": "stale", "equity": equity}
 
         today = bar.strftime("%Y-%m-%d")
-        scheduled = bar.hour in self.config.rebalance_hours_utc and self.store.get("last_scheduled_date") != today
+        # Each hourly bar is decided at most once (last_decision_bar), so every
+        # bar at a configured hour is its own scheduled rebalance.
+        scheduled = bar.hour in self.config.rebalance_hours_utc
         fallback = (not scheduled and self.config.activity_fallback_hour_utc is not None
                     and bar.hour >= self.config.activity_fallback_hour_utc
                     and self.store.get("last_fallback_date") != today and not self._traded_today(now))
@@ -182,7 +184,7 @@ class TradingBot:
 
         self.store.set("last_decision_bar", bar.isoformat())
         if scheduled:
-            self.store.set("last_scheduled_date", today)
+            self.store.set("last_scheduled_bar", bar.isoformat())
         if fallback:
             self.store.set("last_fallback_date", today)
         return {"action": "decided", "equity": equity, "orders": results, "scheduled": scheduled,

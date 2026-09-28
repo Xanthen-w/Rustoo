@@ -11,8 +11,8 @@ Composite Score = 0.4 * Sortino + 0.3 * Sharpe + 0.3 * Calmar
 — not raw return. See `backtest/metrics.py::composite_score`.
 
 **Live strategy:** risk-managed BTC/ETH trend core (40-day EMA trend filter with
-hysteresis, volatility-targeted sizing, 15% exposure floor, daily 00:00 UTC
-rebalance). Rationale and evidence: [`docs/STRATEGY.md`](docs/STRATEGY.md).
+hysteresis, volatility-targeted sizing, 15% exposure floor, exact rebalance
+every 6 hours). Rationale and evidence: [`docs/STRATEGY.md`](docs/STRATEGY.md).
 Competition constraints: [`docs/COMPETITION_RULES.md`](docs/COMPETITION_RULES.md).
 
 ## Status
@@ -88,7 +88,7 @@ and shows the exact command, so anything done in the browser can be repeated fro
   A couple of minutes after each hourly bar closes, it recomputes the strategy's targets on
   Binance hourly closes (the backtested data) and trades toward them (`src/bot/runner.py`).
 - **Execution policy:** same as the backtest. Trade an asset only when its weight drifts
-  ≥5% from target; exact rebalance daily at 00:00 UTC. If a UTC day reaches 12:00 with no
+  ≥5% from target; exact rebalance at 00:00, 06:00, 12:00 and 18:00 UTC. If a UTC day reaches 12:00 with no
   filled order, one exact rebalance is forced, since the rules require ≥8 trading days.
   MARKET orders, rounded to exchange precision, with Roostoo's minimum order size respected;
   sells before buys.
