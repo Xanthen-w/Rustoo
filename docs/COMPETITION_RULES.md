@@ -49,3 +49,17 @@ changes design decisions. The organizers' published text is authoritative.
   (`execution.allow_shorting: false`) until the bot itself confirms it works during the prep period.
 - **Rate limit:** the official text sets no numeric limit. `execution.min_seconds_between_orders`
   stays a conservative client-side throttle.
+
+## Organizer clarifications (received 2026-09-28)
+
+Questions sent by the team; answers paraphrased from the organizers' reply.
+
+| # | Question | Answer | Consequence for this repo |
+|---|---|---|---|
+| 1 | What is an "active trading day" / "enough trades"? | A day on which the bot placed **at least 1 trade**. The trade history should be consistent with the stated strategy, not look like manual trading. | Met by the scheduled rebalances (every 6h since 2026-09-28; once a day already qualified). |
+| 2 | How to apply code updates during the live round? | Update on the cloud machine; teams may stop, restart and redeploy the bot themselves. | Runbook: commit → `git pull` on EC2 → `sudo systemctl restart rustoo-bot`. The commit history is the audit trail. |
+| 3 | Shorts: liquidation? Native stop orders? | Losses are capped at the collateral (a short's value can reach zero, not go negative). **No native stop-loss/take-profit orders**: only the documented endpoints exist, so a bot must monitor prices and send its own market close. The only slippage is the price moving between the bot's check and its order. | Any stop logic lives in the bot. Shorting is possible (see 4). |
+| 4 | Long and short in the same pair at once? | **Yes.** | Shorts can be researched as a separate sleeve; `execution.allow_shorting` stays `false` until that research is done and shorts are tested through the bot. |
+| 5 | Data source / symbols for bStocks? | Use the symbols exactly as `/v3/exchangeInfo` returns them; Binance (or another source) is fine for history. | Matches what `src/data/binance.py` does. |
+| 6 | Exact Sharpe / Sortino / Calmar formulas and sampling? | **Not answered.** | Annualization and return sampling remain unknown; research keeps comparing strategies on the same basis rather than trusting absolute scores. |
+| 7 | Idempotency: how to check an order after a timeout? | Verify with `/v3/query_order`. | Already how `LiveBroker` reconciles an order whose outcome is unknown (it never blindly resubmits). |
