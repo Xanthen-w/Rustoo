@@ -152,6 +152,29 @@ leg is not adopted.** It behaves like a bet that the market will fall, not a rob
 The largest move against any short was +14%, far from the +100% that would wipe out collateral.
 The engine support (`allow_short`) and `trend_vol_long_short` stay available for research.
 
+## Where the money goes, and the choppy-market filter (2026-09-29)
+
+`scripts/loss_attribution.py` (live settings, 6-hourly rebalances, base costs):
+
+| | train (Nov 2024 – Dec 2025) | validation (Jan – May 2026) |
+|---|---|---|
+| net P&L | +$47,424 | −$13,303 |
+| in trend at full size (BTC + ETH) | +$71,518 | −$6,753 |
+| **15% floor while out of trend** | **−$17,450** | **−$6,750** |
+| trend episodes shorter than 14 days (whipsaws) | 7 episodes, −$18,739 | 2 episodes, −$3,941 |
+| trend episodes of 14 days or more | 7 episodes, +$90,257 | 4 episodes, −$2,812 |
+| sideways market stretches (61–63% of the time) | −$25,663 | −$13,885 |
+| costs | $4,057 ($2,818 from 42 signal-change fills) | $987 |
+
+(The categories overlap, e.g. a whipsaw is also an in-trend episode, so rows don't add up to the
+net P&L.) A handful of long trends make all the money; whipsaws and the floor give a lot back.
+
+**Choppy-market filter** (`scripts/chop_filter_research.py`): only enter a trend if Kaufman's
+efficiency ratio over 10/20/30 days is at least 0.2/0.3/0.4. The adoption rule was written into the
+script before it ran. **No variant passed.** Requiring a "clean" move delays entry into the good
+trends (train bull-regime return fell from +101% to +56–99%) without consistently cutting whipsaw
+losses, and every variant scored below live on train. Not adopted.
+
 ## Honest limitations
 
 - **The return edge did not survive validation; the risk reduction did.** In a falling market the

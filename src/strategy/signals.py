@@ -216,6 +216,40 @@ def trend_vol_long_short(
     return weights.div(gross.where(gross > 1.0, 1.0), axis=0)
 
 
+def trend_vol_chop_filter(
+    close_wide: pd.DataFrame,
+    assets: tuple = ("BTC/USD", "ETH/USD"),
+    trend_span: int = 960,
+    band: float = 0.03,
+    vol_lookback: int = 720,
+    target_vol: float = 0.5,
+    max_weight: float = 1.0,
+    min_exposure: float = 0.15,
+    er_window: int = 480,
+    er_min: float = 0.3,
+) -> pd.DataFrame:
+    """trend_vol_target whose trend *entries* require a clean move: the
+    efficiency ratio over `er_window` bars (daily hops) must be at least
+    `er_min`. Targets the measured main leak — buying breakouts in choppy,
+    directionless markets that then fall back. Exits, sizing, floor and cap
+    are exactly trend_vol_target's; er_min = 0 reproduces it."""
+    weights = pd.DataFrame(0.0, index=close_wide.index, columns=close_wide.columns)
+    present = [a for a in assets if a in close_wide.columns]
+    if not present:
+        return weights
+    bars_per_year = _bars_per_year(close_wide.index)
+    for asset in present:
+        close = close_wide[asset]
+        er = trend_feat.efficiency_ratio(close, er_window)
+        in_trend = trend_feat.confirmed_trend_state(close, trend_span, band, er.fillna(0.0), er_min)
+        vol = vol_feat.realized_vol(close, vol_lookback, annualize_periods_per_year=bars_per_year)
+        size = (target_vol / len(present) / vol).clip(upper=max_weight)
+        exposure = in_trend + (1.0 - in_trend) * min_exposure
+        weights[asset] = (exposure * size).fillna(0.0)
+    gross = weights.sum(axis=1)
+    return weights.div(gross.where(gross > 1.0, 1.0), axis=0)
+
+
 # Name -> strategy function, for config-driven research (parameter grids in
 # config/research.yaml call these with keyword arguments).
 STRATEGIES = {
@@ -228,4 +262,5 @@ STRATEGIES = {
     "volatility_filtered_momentum": volatility_filtered_momentum,
     "trend_vol_target": trend_vol_target,
     "trend_vol_long_short": trend_vol_long_short,
+    "trend_vol_chop_filter": trend_vol_chop_filter,
 }
