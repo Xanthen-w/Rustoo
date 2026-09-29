@@ -5,9 +5,17 @@
 Runs the live configuration on train and validation and splits P&L by coin,
 by strategy state (in trend at full size vs the 15% floor), by market
 regime (BTC's trailing 30-day return), by individual trend episode (entry to
-exit of the trend filter), and by cost type. Per-bar P&L per coin is
-equity(t-1) x weight(t-1) x return(t); the unexplained residual (fills at
-the open, rebalancing within a bar) is reported so the split can be trusted.
+exit of the trend filter), and by cost type.
+
+Per-bar P&L per coin is computed from the quantities actually held: fills
+happen at each bar's open, so the gap from the previous close to the open
+is earned by the previous quantity and the move from the open to the close
+by the new quantity. This reproduces the engine's gross P&L exactly (the
+residual printed should be ~0). The first version multiplied the previous
+bar's *weight* by the close-to-close return, which charged each exit bar's
+move to the old full-size position and wrongly attributed ~$14k of train
+losses to the 15% floor. Bars are labelled with the trend state in force
+(decided at the previous close), for the same reason.
 """
 from __future__ import annotations
 
@@ -49,10 +57,15 @@ def main() -> int:
         r = BacktestEngine(SCENARIOS["base"], **kw).run(close.loc[idx], w.loc[idx], open_wide=open_.loc[idx])
         ppy = an.periods_per_year(idx)
 
-        eq_prev = r.portfolio_value.shift(1).fillna(r.initial_capital)
-        rets = close.loc[idx].pct_change().fillna(0.0)
-        contrib = r.weights_history.shift(1).fillna(0.0).mul(rets).mul(eq_prev, axis=0)  # $ per coin per bar
-        state = pd.DataFrame({a: trend_state(close[a], p["trend_span"], p["band"]).loc[idx] for a in p["assets"]})
+        c, o = close.loc[idx], open_.loc[idx]
+        qty = r.weights_history.mul(r.portfolio_value, axis=0) / c.ffill()  # quantity held after each bar's trade
+        prev_q, prev_c = qty.shift(1).fillna(0.0), c.ffill().shift(1)
+        contrib = (prev_q * (o - prev_c)).fillna(0.0) + (qty * (c.ffill() - o)).fillna(0.0)  # $ per coin per bar
+        # The state *in force* for a bar is the one decided at the previous
+        # close (fills follow at the next open). Labelling a bar with its own
+        # close's state would put the drop that triggers an exit — earned by
+        # the full-size position — into the "out of trend" bucket.
+        state = pd.DataFrame({a: trend_state(close[a], p["trend_span"], p["band"]).shift(1).loc[idx] for a in p["assets"]})
         labels = rb.classify_regimes(close["BTC/USD"].ffill(), ppy, rb.RegimeConfig()).loc[idx]["trend"]
 
         net = r.portfolio_value.iloc[-1] - r.initial_capital

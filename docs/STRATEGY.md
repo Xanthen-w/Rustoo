@@ -154,26 +154,48 @@ The engine support (`allow_short`) and `trend_vol_long_short` stay available for
 
 ## Where the money goes, and the choppy-market filter (2026-09-29)
 
-`scripts/loss_attribution.py` (live settings, 6-hourly rebalances, base costs):
+`scripts/loss_attribution.py` (live settings, 6-hourly rebalances, base costs). P&L per coin is
+computed from the quantities actually held, so it reconciles exactly with the engine (residual $0),
+and each bar is labelled with the trend state in force when its position was set. *An earlier
+version of the script got both of these wrong and reported the 15% floor as losing $17,450 on train.
+That was an artifact: it charged the move that triggers each exit to the floor.*
 
 | | train (Nov 2024 – Dec 2025) | validation (Jan – May 2026) |
 |---|---|---|
 | net P&L | +$47,424 | −$13,303 |
-| in trend at full size (BTC + ETH) | +$71,518 | −$6,753 |
-| **15% floor while out of trend** | **−$17,450** | **−$6,750** |
-| trend episodes shorter than 14 days (whipsaws) | 7 episodes, −$18,739 | 2 episodes, −$3,941 |
-| trend episodes of 14 days or more | 7 episodes, +$90,257 | 4 episodes, −$2,812 |
-| sideways market stretches (61–63% of the time) | −$25,663 | −$13,885 |
+| trend episodes of 14 days or more | 7 episodes, **+$84,934** | 4 episodes, −$4,765 |
+| **trend episodes shorter than 14 days (whipsaws)** | 7 episodes, **−$31,942** | 2 episodes, −$4,942 |
+| 15% floor while out of trend | −$1,511 | −$2,609 |
+| sideways market stretches (61–63% of the time) | −$28,205 | −$12,657 |
 | costs | $4,057 ($2,818 from 42 signal-change fills) | $987 |
 
-(The categories overlap, e.g. a whipsaw is also an in-trend episode, so rows don't add up to the
-net P&L.) A handful of long trends make all the money; whipsaws and the floor give a lot back.
+(Categories overlap, e.g. whipsaws happen mostly in sideways stretches, so rows don't add up to the
+net P&L.) **The leak is whipsaws:** entries that reverse within two weeks gave back over a third of
+what the long trends earned. The floor is a minor cost.
 
 **Choppy-market filter** (`scripts/chop_filter_research.py`): only enter a trend if Kaufman's
 efficiency ratio over 10/20/30 days is at least 0.2/0.3/0.4. The adoption rule was written into the
 script before it ran. **No variant passed.** Requiring a "clean" move delays entry into the good
 trends (train bull-regime return fell from +101% to +56–99%) without consistently cutting whipsaw
 losses, and every variant scored below live on train. Not adopted.
+
+## Floor size (2026-09-29)
+
+The 15% floor was only there to guarantee daily trades; the organizers since defined an active
+day as one with at least 1 trade. `scripts/floor_research.py` compared floors of 0/2/5/10% with 15%,
+with an adoption rule written in before running (smallest floor that keeps ≥ 8 days with a ≥ $2
+fill in every 14-day window, beats live on train, and isn't worse on validation):
+
+| floor | windows with ≥ 8 active days (train / val) | smallest daily trade, 10th pct (train / val) | train mean 14d | train composite | val mean 14d | val continuous |
+|---|---|---|---|---|---|---|
+| **15% (live)** | 100% / 100% | $119 / $76 | +0.90% | 1.60 | −1.21% | −13.3% |
+| 10% | 100% / 100% | $84 / $53 | +0.92% | 1.65 | −1.12% | −12.5% |
+| 5% | 100% / 100% | $43 / $29 | +0.94% | 1.68 | −1.02% | −11.7% |
+| 2% | 100% / 100% | $17 / $12 | +0.96% | 1.71 | −0.95% | −11.2% |
+| 0% | 62% / 43% ✗ | — | +0.97% | 1.72 | −0.91% | −10.8% |
+
+2%, 5% and 10% all pass the rule; the rule picks the smallest (2%). The gains are modest, as the
+corrected attribution predicts, and smaller floors mean smaller daily trades.
 
 ## Honest limitations
 
