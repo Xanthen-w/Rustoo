@@ -1,269 +1,301 @@
-# Roostoo Quant Trading Bot
+# Rustoo: a risk-managed BTC/ETH trend bot for the Roostoo hackathon
 
-Autonomous quant trading system for the HK vs AU vs IN Quant Trading
-Hackathon (Roostoo × Susquehanna). Optimizes for the competition's actual
-scoring function:
+An autonomous trading bot for the APAC University Quant Trading Hackathon (Roostoo × Susquehanna × AWS),
+built by Team125-100aqi (IITR). It trades BTC and ETH on Roostoo's mock exchange with a slow,
+volatility-targeted trend-following strategy, and it was designed around the competition's scoring:
+first **portfolio return**, then `0.4 × Sortino + 0.3 × Sharpe + 0.3 × Calmar` over a 14-day live period.
 
-```
-Composite Score = 0.4 * Sortino + 0.3 * Sharpe + 0.3 * Calmar
-```
+**In one paragraph:** the bot holds BTC and ETH while each is in an uptrend (price above its 40-day
+average, with a 3% buffer against noise), sizes each position by its recent volatility, and drops a
+coin to a small 5% "floor" position when its trend breaks. It rebalances to its targets every 6 hours
+and otherwise trades only when a position has drifted meaningfully. In backtests it didn't reliably
+beat the market's direction over two weeks, but in every period we tested it **made the worst
+14-day loss 34–65% smaller** than holding BTC.
 
-— not raw return. See `backtest/metrics.py::composite_score`.
+Contents: [Strategy](#1-the-strategy) · [How we arrived at it](#2-how-we-arrived-at-it) ·
+[Implementation](#3-implementation) · [Backtesting](#4-backtesting) · [Trading engine](#5-the-trading-engine) ·
+[Transaction fees](#6-transaction-fees-maker-and-taker) · [Risk management](#7-risk-management) ·
+[Limitations](#8-limitations-and-honest-caveats) · [How we built this](#9-how-we-built-this) ·
+[Running it](#10-running-it) · [Repository map](#11-repository-map)
 
-**Live strategy:** risk-managed BTC/ETH trend core (40-day EMA trend filter with
-hysteresis, volatility-targeted sizing, 5% exposure floor, exact rebalance
-every 6 hours). Rationale and evidence: [`docs/STRATEGY.md`](docs/STRATEGY.md).
-Competition constraints: [`docs/COMPETITION_RULES.md`](docs/COMPETITION_RULES.md).
+---
 
-## Status
+## 1. The strategy
 
-Built and tested (185 tests): API client with safety gates, historical data
-pipeline, look-ahead-safe backtester, walk-forward and 14-day window
-research tooling, the selected live strategy, and the **live bot**:
-signal → order planning → execution → reconciliation → SQLite audit trail,
-with a paper mode, a kill switch, and EC2/systemd deployment. Remaining work
-is listed in the roadmap at the end.
+Every hour, for each of BTC and ETH:
 
-## Setup
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-cp .env.example .env   # fill in ROOSTOO_API_KEY / ROOSTOO_API_SECRET once you have them
-```
-
-Run the tests:
-
-```bash
-.venv/bin/python -m pytest -q
-```
-
-Smoke-test the public API client (no credentials needed):
-
-```bash
-.venv/bin/python -c "
-from src.execution.client import PublicMarketDataClient
-c = PublicMarketDataClient()
-print(c.get_server_time())
-print(list(c.get_exchange_info()['TradePairs'].keys())[:5])
-"
-```
-
-## Research app (local web UI)
-
-```bash
-./run_app.sh            # first run installs the app dependencies, then opens http://localhost:8501
-```
-
-A browser front-end for the backtester, running only on this machine (127.0.0.1, no telemetry,
-no deploy button; see `.streamlit/config.toml`). Pages:
-
-- **Data import:** upload Excel/CSV, get the validation report (✓ / ⚠ / ✕ per file, with
-  reasons), a price chart per imported file, and the dataset library.
-- **Backtest:** choose data source, period (train / validation / holdout / custom range),
-  strategy, coins, parameters, costs and execution, then **Run backtest**. Headline metrics,
-  downloads (summary, trades, fills) and the full interactive report appear on the page.
-- **Robustness:** stress tests, Monte Carlo, regimes, parameter maps and the random-entry test.
-- **Run history:** every run (from the app or the terminal), with its command, configuration and
-  report; **Reproduce** re-runs it and checks every number matches; **Compare** diffs two runs.
-- **Paper bot:** equity curve, wallet, hourly decisions, orders and API health of the running
-  paper bot (read-only).
-
-The app never re-implements research logic: every button runs one of the scripts in `scripts/`
-and shows the exact command, so anything done in the browser can be repeated from the terminal.
-
-## Running the bot
-
-```bash
-.venv/bin/python -m src.main --once     # one iteration (smoke test)
-.venv/bin/python -m src.main            # run continuously
-.venv/bin/python -m src.main --status   # audit summary: decisions, orders, active trading days
-```
-
-- **Mode:** orders go to Roostoo only when `APP_ENV=live` **and** `LIVE_TRADING=true`
-  (and API credentials are set). Otherwise the bot runs the same decisions against a
-  simulated `PaperBroker` wallet ($100k, 0.1% taker fee). Paper and live keep separate
-  databases (`data/state/bot-<mode>.sqlite3`).
-- **Loop:** every 60s it reads Roostoo tickers and the balance and snapshots equity.
-  A couple of minutes after each hourly bar closes, it recomputes the strategy's targets on
-  Binance hourly closes (the backtested data) and trades toward them (`src/bot/runner.py`).
-- **Execution policy:** same as the backtest. Trade an asset only when its weight drifts
-  ≥5% from target; exact rebalance at 00:00, 06:00, 12:00 and 18:00 UTC. If a UTC day reaches 12:00 with no
-  filled order, one exact rebalance is forced, since the rules require ≥8 trading days.
-  MARKET orders, rounded to exchange precision, with Roostoo's minimum order size respected;
-  sells before buys.
-- **Audit trail** (`src/bot/store.py`): every API request and its outcome, every decision,
-  every order with its real fill/fee/role from Roostoo, and equity snapshots.
-  JSON logs go to `logs/bot.jsonl`.
-- **Kill switch:** `touch STOP` in the repo root makes the bot keep deciding and logging but
-  stop sending orders. `rm STOP` resumes.
-- **Deployment:** `bash deployment/setup_ec2.sh` on the EC2 instance (systemd service,
-  clock sync, venv, tests).
-
-## Architecture
-
-```
-docs/API_NOTES.md        - what's verified about the Roostoo API vs. assumed
-config/                  - non-secret config: fees, universe filters, strategy params
-src/config/settings.py   - env vars + config.yaml; hard gate on live trading
-src/execution/client.py  - PublicMarketDataClient / PrivateTradingClient (signed HMAC)
-src/data/market_data.py  - normalized Ticker type + pluggable HistoricalDataSource
-src/data/universe.py     - tradable universe + precision/min-notional rules, from exchangeInfo
-src/data/roostoo_data.py - live feed wrapper + TickerBarBuilder (self-collected OHLCV)
-src/data/binance.py      - Binance public-archive kline downloader (backtest history)
-src/data/historical.py   - ParquetDataSource / BloombergExcelSource, resampling, wide panels
-scripts/                 - download_binance_history, run_baselines, walk_forward, window_analysis, compare_sources
-src/data/live_history.py - recent Binance hourly closes for the live signal (closed bars only)
-src/execution/portfolio.py - wallet parsing + pure order planner (band, daily rebalance, precision, MiniOrder)
-src/execution/broker.py  - LiveBroker (Roostoo, reconciles unknown outcomes) / PaperBroker (simulated)
-src/bot/                 - runner (loop), store (SQLite audit trail), logging
-src/risk/drawdown.py     - drawdown state machine (implemented, off: hurt in walk-forward)
-src/main.py              - entry point
-deployment/              - systemd unit + EC2 setup script
-src/features/            - momentum, trend, volatility, volume, cross-sectional (all causal)
-src/strategy/signals.py  - baseline strategies -> target weights (long-only, no leverage)
-src/strategy/portfolio.py- vol-scaled weighting, constraints, rebalance-threshold hysteresis
-backtest/engine.py       - chronological multi-asset sim with an enforced execution lag
-backtest/costs.py        - maker/taker fee + slippage model, optimistic/base/pessimistic
-backtest/metrics.py      - Sharpe/Sortino/Calmar/drawdown/turnover/composite score
-tests/                   - incl. a live signature check against the doc's worked example,
-                            and look-ahead-bias regression tests for every baseline strategy
-```
-
-### Live-trading safety
-
-`PrivateTradingClient` refuses every state-changing call (place/cancel order,
-short open/close) unless it was built with live trading enabled, and
-`build_clients_from_settings` only enables it when **both** `APP_ENV=live`
-and `LIVE_TRADING=true`. Read-only calls (balance, order queries) always work.
-Shorting additionally needs `execution.allow_shorting: true`, and a
-cancel-everything call needs `execution.allow_cancel_all_without_filter: true`
-plus an explicit per-call flag. Order-creating calls are never retried
-automatically (a retry after a timeout could double-submit); see
-`docs/API_NOTES.md`.
-
-Strategy code (`src/strategy`, `src/features`) never imports the API client —
-it only ever sees normalized `pandas` data, so every strategy is testable and
-backtestable without touching the network.
-
-### Look-ahead safety
-
-Two independent guards:
-
-1. Every feature/strategy function is causal by construction (rolling/ewm
-   windows only), and `tests/test_lookahead.py` proves it empirically: it
-   mutates the *future* tail of a price series and asserts each strategy's
-   past output doesn't change.
-2. `backtest.BacktestEngine` refuses `execution_lag < 1` — a signal computed
-   from data through bar `t` is only ever filled at bar `t + execution_lag`,
-   never at bar `t`'s own price.
-
-### Backtest accounting
-
-`BacktestEngine` (`backtest/engine.py`):
-
-- **Execution timing is explicit.** A signal from bar *t* fills at bar *t + execution_lag*, at
-  that bar's **close** (default) or **open** (`execution_price="open"`, closest to the live bot,
-  which trades minutes after each hourly bar closes).
-- **Costs are itemised** (`backtest/costs.py`): fee (maker/taker mix), half of a modeled spread,
-  modeled slippage, and modeled market impact (`k · participation^α`, only with volume data,
-  never fabricated). Every fill is logged with its costs and participation (`result.fills`).
-- **Gross vs net:** `result.gross_pnl` is the mark-to-market P&L of the positions actually held;
-  `result.gross_value` is the same trades with no costs deducted. Tests enforce
-  `final − initial = Σ gross P&L − Σ costs` to floating-point precision.
-- It rejects negative targets and rows above 100% (no shorting, no leverage), never lets cash
-  go negative to pay costs (buys are scaled down), and treats a missing price as "can't trade
-  this bar": the position is held and marked at its last price.
-- Sortino uses the standard downside deviation (`backtest/metrics.py::downside_deviation`).
-
-Planned upgrades and the decisions behind them: [`docs/BACKTESTER_PLAN.md`](docs/BACKTESTER_PLAN.md).
-
-### Historical data
-
-Roostoo's API has no historical-candle endpoint — only a live ticker
-snapshot (`/v3/ticker`) — so backtests use **Binance spot klines** for the
-same coins (`COIN/USD` on Roostoo ↔ `COINUSDT` on Binance; 86 of Roostoo's 88
-pairs exist there, all but OMNI and TON). Binance's bulk archive is public
-and free; Bloomberg exports are used only to cross-check it.
-
-```bash
-.venv/bin/python scripts/download_binance_history.py   # 2y of 5m bars, all Roostoo pairs -> data/binance/5m/
-.venv/bin/python scripts/run_baselines.py              # every baseline x cost scenario, ranked by composite score
-.venv/bin/python scripts/compare_sources.py            # Binance vs Bloomberg exports in data/raw/bloomberg/
-```
-
-Every loaded bar is indexed by its **close time in UTC** — the moment its
-close price is known — whatever the source's own convention (Bloomberg
-exports are IST and labelled by bar start; Binance by open time). `data/` is
-gitignored: market data, especially licensed Bloomberg data, must never be
-committed.
-
-### Research protocol: train / validation / holdout
-
-`config/research.yaml` splits the history chronologically (never shuffled):
-
-| split | window | use |
+| Step | Rule | Parameter (`config/strategy.yaml`) |
 |---|---|---|
-| train | 2024-09-26 → 2026-01-01 | idea development, walk-forward parameter search |
-| validation | 2026-01-01 → 2026-06-01 | choosing between finalists |
-| test (holdout) | 2026-06-01 → end | **one** final evaluation of the chosen strategy |
+| **Trend filter** | A coin is *in trend* once its hourly close is 3% above its 40-day exponential moving average, and *out of trend* once it closes 3% below. In between, the previous state is kept, so a price hovering around the average doesn't flip the position. | `trend_span: 960` hourly bars, `band: 0.03` |
+| **Position size** | Each coin gets an equal share of a 50% annualised volatility budget: weight = (0.5 / 2) ÷ its 30-day realised volatility. Calmer coins get bigger positions. | `target_vol: 0.5`, `vol_lookback: 720` |
+| **Out of trend** | Keep 5% of the normal size (the "floor") instead of going fully to cash, so there's always a position to rebalance (the rules require a trade on at least 8 days). | `min_exposure: 0.05` |
+| **Caps** | Total exposure ≤ 100% (no leverage), long-only, 0.5% of equity kept in cash for fees and rounding. | |
+| **Trading** | Rebalance exactly to target at 00:00, 06:00, 12:00 and 18:00 UTC. At other hours, trade a coin only if its weight is ≥ 5 percentage points away from target. Market orders. | `rebalance_hours_utc`, `rebalance_threshold: 0.05` |
 
-`backtest/splits.py::load_split_panel` never loads bars past the requested
-split's end, and refuses the holdout unless explicitly allowed (scripts:
-`--use-holdout`). Indicators warm up on the data before a split; only the
-split's own window is scored.
+Code: `src/strategy/signals.py::trend_vol_target`, `src/features/trend.py`, `src/features/volatility.py`.
 
-```bash
-.venv/bin/python scripts/run_baselines.py --split train          # fixed-parameter baselines
-.venv/bin/python scripts/walk_forward.py --split train           # walk-forward search over config/research.yaml grids
-.venv/bin/python scripts/window_analysis.py --split train        # every 14-day window from cash (the competition horizon)
-.venv/bin/python scripts/backtest_report.py --split validation   # full HTML report + CSV/JSON exports for the live strategy
-.venv/bin/python scripts/robustness_report.py --split validation # costs, stress, Monte Carlo, regimes, parameter landscapes, random entry
-.venv/bin/python scripts/runs.py list                            # experiment history (every report run gets a run ID)
-.venv/bin/python scripts/runs.py reproduce <run-id>              # re-run it and check every number matches
+**The hypothesis** (ours, not proven by backtests): crypto majors trend over weeks, so staying out of
+coins below their 40-day trend and sizing by volatility should cut the downside — drawdowns and
+downside volatility, which the Sortino and Calmar terms punish — by more than it costs in missed upside.
+We expected it to struggle in choppy, directionless markets, and our loss attribution confirms that
+this is where it loses money (section 4).
+
+## 2. How we arrived at it
+
+We treated this as a search that most ideas would fail, and kept a record of what failed and why.
+
+1. **Fast signals lose to fees.** Our first backtests (hourly bars, 86 coins, 2 years) tried
+   cross-sectional momentum, EMA-crossover trend following, mean reversion and volatility-filtered
+   momentum. All of them lost money after the 0.1% fee; cross-sectional momentum paid over 3× its
+   capital in fees. Only buy-and-hold BTC was positive.
+2. **Tuned parameters didn't survive unseen data.** Walk-forward testing (tune on 4 months, trade
+   the next month, repeat) showed the best-looking parameters kept changing and lost money out of
+   sample: in-sample composite scores of 30–40 turned negative the next month.
+3. **Optimise for the real competition horizon.** The competition scores one 14-day run starting
+   from cash, so we evaluated every candidate on *every* historical 14-day window, measuring return,
+   worst case and trading days, rather than on multi-year Sharpe ratios.
+4. **A slow trend with volatility sizing** was the only design that improved the bad tail
+   consistently: in the validation period its worst 14-day window was −10.0% against BTC's −28.8%.
+5. **Rule-driven adjustments.** After the organizers clarified that an "active day" is one with at
+   least one trade, we reduced the out-of-trend floor from 15% to 5% (tested with a selection rule
+   written before the test ran). We also moved from one to four scheduled rebalances a day, which
+   gives several chances to register each day's trade for about 0.03% of capital per 14 days.
+
+**Ideas we tested and rejected** (all in `docs/STRATEGY.md`, each with the script that tested it):
+
+| Idea | Why rejected |
+|---|---|
+| Drawdown state machine (cut exposure after 5/10/20% drawdowns) | Sold after drops, bought back after rebounds: turned buy-and-hold's −16% into −21% out of sample |
+| Short positions in downtrends | Big gains in falling markets, but deeper losses in choppy ones (61% of the time); worse overall on the selection data |
+| Choppy-market entry filter (Kaufman efficiency ratio) | Delayed entry into the few big trends that make the money; no variant beat the live strategy |
+| More coins (top 5/10 by liquidity, adding TRX) | No better than BTC+ETH on the selection data; altcoins crash together with BTC |
+| Hourly rebalancing | Hundreds of tiny trades, higher costs, no benefit |
+
+## 3. Implementation
+
+Python 3.10+, pandas/numpy, no external trading framework. The same strategy function drives the
+backtests and the live bot, so what was tested is what trades.
+
+```
+Binance hourly closes ──► strategy (trend_vol_target) ──► target weights
+                                                              │
+Roostoo balance + prices ──► order planner ──► broker (Roostoo API) ──► fills
+                                  │                    │
+                                  └──── audit trail (SQLite): every API call, decision, order, fee, equity
 ```
 
-**Importing your own data** (Excel/CSV, e.g. Bloomberg exports):
+- **Signal data:** Roostoo has no price-history endpoint, so signals use Binance's public hourly
+  klines for the same coins (`COIN/USD` on Roostoo ↔ `COINUSDT` on Binance). We checked Binance
+  against our Bloomberg exports: 3–6 bps median price difference, 0.99+ return correlation.
+- **Execution:** Roostoo's own prices and wallet, through a signed API client (HMAC-SHA256,
+  verified against the worked example in Roostoo's documentation).
+- **Separation:** strategy code never touches the network; it's a pure function of prices, which
+  makes it testable and backtestable.
+
+## 4. Backtesting
+
+**Data:** 2 years of Binance 5-minute klines for all Roostoo pairs (Sep 2024 – Sep 2026), resampled
+to hourly bars. Every bar is labelled by its UTC close time, so a signal only uses prices that
+existed at that moment.
+
+**Protocol** (`config/research.yaml`), chronological and never shuffled:
+
+| Split | Period | Used for |
+|---|---|---|
+| Train | Sep 2024 – Dec 2025 | Developing ideas and choosing parameters |
+| Validation | Jan – May 2026 | Checking finalists once |
+| Holdout | Jun – Sep 2026 | One final evaluation (done on 2026-09-27, before any later change) |
+
+Before each experiment we wrote down the rule that decides whether a change is adopted, and the
+scripts print whether it passed. The code refuses to load holdout data unless explicitly asked to.
+
+**Engine** (`backtest/engine.py`):
+- A signal computed at an hourly close fills at the **next bar's open**; the engine refuses zero
+  delay, and every strategy passes a test showing its past decisions can't change when future prices
+  are altered.
+- Fees, slippage, spread and market impact are charged per fill, and the accounting is checked:
+  final equity = starting capital + gross P&L − costs, to the cent.
+- No leverage; cash can't go negative; missing prices are held rather than valued at zero.
+
+**Results for the current configuration** (base costs: 0.10% taker fee + 5 bps slippage per trade;
+$100k starting capital):
+
+| Period | | Return | Max drawdown | Sharpe | Mean 14-day return | Worst 14-day return | 14-day windows with ≥ 8 trading days |
+|---|---|---|---|---|---|---|---|
+| **Train** (Nov 2024 – Dec 2025) | **Strategy** | **+48.5%** | **−22.3%** | **1.31** | +0.94% | −12.2% | 100% |
+| | BTC buy-and-hold | +28.8% | −34.8% | 0.71 | +0.41% | −18.5% | — |
+| | 50/50 BTC+ETH buy-and-hold | +26.5% | −47.0% | 0.65 | +0.45% | −21.2% | — |
+| **Validation** (Jan – May 2026) | **Strategy** | **−11.7%** | **−17.9%** | −1.12 | −1.02% | **−10.0%** | 100% |
+| | BTC buy-and-hold | −15.8% | −35.6% | −0.69 | −1.51% | −28.8% | — |
+| | 50/50 BTC+ETH buy-and-hold | −23.3% | −40.5% | −1.03 | −2.32% | −32.3% | — |
+| **Holdout** (Jun – Sep 2026)* | **Strategy** | **+34.5%** | **−6.6%** | **3.20** | +3.84% | −4.6% | 100% |
+| | BTC buy-and-hold | +14.0% | −21.1% | 1.20 | +3.20% | −11.3% | — |
+| | 50/50 BTC+ETH buy-and-hold | +22.0% | −22.2% | 1.61 | +4.31% | −12.5% | — |
+
+\*The holdout was evaluated once, on 2026-09-27, with the configuration at that time (15% floor, one
+rebalance a day). The numbers above are recomputed for the current configuration as a report only;
+no decision was made from them.
+
+**What the results say:**
+- **It loses money when the market falls** (validation), just much less: its worst two weeks were
+  about a third as bad as BTC's.
+- **Its typical two-week return is close to the market's;** the advantage is in the tail. In the
+  holdout, 50/50 buy-and-hold had a higher mean 14-day return, but a worst window almost 3× as bad.
+- **Where it loses** (`scripts/loss_attribution.py`, train, computed with the earlier 15% floor):
+  seven long trends earned +$84,934, seven short-lived "whipsaw" entries that reversed within two
+  weeks lost −$31,942, and costs were $4,057. Losses come from choppy markets, as the hypothesis
+  predicted.
+- **Robustness** (`scripts/robustness_report.py`, validation, computed with the earlier 15% floor
+  and one rebalance a day): tripling fees or adding an hour of delay moves the
+  result by about 1 percentage point; timing beat random entry with the same position sizes in 2 of 3
+  periods; a Monte Carlo of 14-day outcomes (validation data, 8,000 paths, 4 seeds) gave a 61%
+  chance of a loss, a median of −1.3% and a 5th percentile of −8.9% — i.e. results mostly follow
+  the market.
+
+The full research record, including every rejected idea and a bug we found in our own
+analysis, is in [`docs/STRATEGY.md`](docs/STRATEGY.md).
+
+## 5. The trading engine
+
+`src/main.py` → `src/bot/runner.py`, deployed as a systemd service on AWS EC2 (restarts automatically).
+
+- **Every minute:** read Roostoo prices and the wallet; save an equity snapshot every 15 minutes.
+- **Two minutes after each hourly close:** fetch the last 2,000 hourly Binance closes (closed bars
+  only), compute target weights with the same function as the backtests, and plan orders.
+- **Order planning** (`src/execution/portfolio.py`): sells before buys; quantities rounded down to
+  Roostoo's precision; orders under Roostoo's minimum ($1) skipped; buys sized so that cost plus
+  fees fits the available cash; targets scaled to keep the 0.5% cash buffer.
+- **Execution** (`src/execution/broker.py`): market orders, at least 10 seconds apart. The fill
+  price, quantity, fee and maker/taker role are read from Roostoo's response, never assumed.
+- **If an order's outcome is unknown** (timeout, server error), the bot does **not** resubmit; it
+  looks the order up with `/v3/query_order` (the method the organizers recommend) to avoid duplicates.
+- **Daily activity:** besides the four scheduled rebalances, if a UTC day reaches 12:00 with no
+  filled order the bot forces one rebalance.
+- **Audit trail** (`src/bot/store.py`, SQLite): every API request and whether it succeeded, every
+  hourly decision (targets, current weights, reason for trading or not), every order with Roostoo's
+  full response, and equity snapshots.
+
+**Live test** (testing account, 2026-09-30): both first orders filled in ~4 ms; fees were exactly
+0.10% (taker); the wallet matched the bot's records to the last decimal for BTC and ETH and within
+$0.0006 for USD. The second order filled 12 bps worse than priced because it waited out a 60-second
+gap between orders, which we then reduced to 10 seconds. Before that, a 5-day paper run caught one bug
+we fixed: a fully invested portfolio couldn't rebalance because its cash buffer blocked every buy.
+
+## 6. Transaction fees: maker and taker
+
+Roostoo charges **0.10% for taker orders** (market orders, or limit orders that fill immediately)
+and **0.05% for maker orders** (limit orders that rest on the book). The exchange decides the role.
+
+- **The live bot uses market orders only, so every fill is a taker fill (0.10%).** We chose certainty
+  of execution over the lower maker fee: a missed rebalance could cost more than the fee saved, and
+  maker orders need logic for partial and unfilled orders. Moving to limit orders could save about
+  half the fees (≈2% of capital over 14 months on train); it's the first improvement we'd make.
+- **Backtests charge fees per fill** (`backtest/costs.py`): fee = maker share × 0.05% + taker share ×
+  0.10%, plus slippage. The base case assumes **100% taker plus 5 bps slippage**. We also run an
+  optimistic case (50% maker, 2 bps slippage) and a pessimistic one (0.15% taker, 15 bps
+  slippage), and stress tests up to 3× fees and 100 bps.
+- **The live bot never assumes a fee.** It records Roostoo's `CommissionChargeValue`,
+  `CommissionPercent` and `Role` for every fill; in the live test these were exactly 0.10% and TAKER.
+- **Fees shaped the design:** the 40-day trend, the 5% no-trade band and the 6-hourly schedule all
+  exist because faster trading lost more to fees than it earned. Fees were 4.2% of capital over
+  14 months on train (most of it from ~40 large signal changes, not the routine rebalances).
+- **Orders are sized with fees included,** so a buy never fails for lack of cash to pay its fee.
+
+## 7. Risk management
+
+**Market risk**
+- **Trend filter:** a coin that falls 3% below its 40-day average drops to a 5% position; this is
+  what halved the worst 14-day losses in testing.
+- **Volatility targeting:** position sizes shrink when a coin gets more volatile.
+- **No leverage, long-only:** total exposure ≤ 100%. Shorting was tested and rejected (section 2).
+- **Cash buffer:** 0.5% of equity is never invested, so fees and rounding can't overdraw the account.
+
+**Operational risk**
+- **Two switches for live trading:** orders are sent only if both `APP_ENV=live` and
+  `LIVE_TRADING=true`; otherwise the bot runs against a simulated wallet.
+- **Kill switch:** creating a file named `STOP` makes the bot keep deciding and logging, but send no orders.
+- **Stale data guard:** if the latest price history is more than 2 hours old, the bot doesn't trade.
+- **No duplicate orders:** order calls are never retried blindly; unknown outcomes are reconciled.
+- **Exchange rules:** quantities rounded to Roostoo's precision, orders under the $1 minimum skipped.
+- **Clock sync:** request timestamps follow Roostoo's server time (it rejects requests >60 s off).
+- **Redundant daily trading:** four scheduled rebalances plus a midday fallback, so one failed
+  order can't cost an active trading day.
+- **Audit trail and logs** for every decision, order and API call; the service restarts automatically.
+
+**Our intervention policy during the live period:** change the bot only to fix bugs, via a commit
+and a restart (the organizers allow teams to update and redeploy); never because of a few days of P&L.
+
+## 8. Limitations and honest caveats
+
+- **Over 14 days, results mostly follow the market.** No strategy we tested reliably beat BTC/ETH's
+  direction over two weeks; ours reduces losses in falls and keeps part of the gains in rises.
+- **Choppy markets are the known weakness** (section 4). Our attempt to filter them failed.
+- **Limited history:** two years is only about 50 independent 14-day periods, and both the train
+  and validation periods were weak for crypto; the validation period was also looked at several
+  times during development, so it's no longer a fully clean test.
+- **Signals use Binance prices, trades use Roostoo's.** In our checks they agree closely, but they're
+  not identical.
+- **Backtest costs are modelled:** spread and slippage are assumptions; the live test agreed with
+  them (0.10% fee, 1–12 bps slippage).
+
+## 9. How we built this
+
+We used an AI coding assistant (Anthropic's Claude, through Claude Code) extensively to write code,
+run backtests and draft documentation; commits made with it are marked `Co-Authored-By: Claude`. The
+team directed the work and made the decisions, including:
+
+- which data to trust (Binance history, with our Bloomberg exports as a cross-check),
+- the evaluation method (train/validation/holdout, 14-day windows, rules fixed before each test),
+- what to ask the organizers, and how to act on their answers,
+- the final choices: BTC+ETH only, long-only, the 5% floor, four rebalances a day, the 10-second
+  order gap, and which ideas to reject.
+
+*[Team: expand or rewrite this section in your own words, with who did what.]*
+
+## 10. Running it
 
 ```bash
-.venv/bin/python scripts/import_data.py data/raw/bloomberg/*.xlsx --source bloomberg \
-    --tz Asia/Kolkata --labelled-by start --reference data/binance/5m
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/python -m pytest -q                                   # ~300 tests
+.venv/bin/python scripts/download_binance_history.py            # 2 years of market data (~400 MB, once)
 ```
 
-Columns are detected from common aliases (a wrong or ambiguous guess stops with the `--map` to
-pass). Every file gets a validation report: duplicates, gaps, OHLC consistency, non-24/7 trading,
-extreme moves, identical content across files, and a price cross-check against a reference.
-Clean files land in `data/imported/<source>/` in the same format the backtester reads; the
-dataset library is `data/imported/library.json`.
+**Backtests and research** (outputs go to `research/experiments/`, not committed):
 
-**Forward testing:** `scripts/forward_test.py freeze --name <name>` snapshots the live
-configuration and the data cut-off into `research/forward/<name>.json` (commit it). Later,
-`scripts/forward_test.py evaluate --name <name>` tests that frozen configuration only on data
-that arrived after the freeze, with no parameter overrides possible.
+```bash
+.venv/bin/python scripts/backtest_report.py --split validation   # full interactive HTML report
+.venv/bin/python scripts/robustness_report.py --split validation # stress tests, Monte Carlo, regimes
+.venv/bin/python scripts/runs.py list                            # history of runs; `reproduce <id>` re-checks one
+./run_app.sh                                                     # local web app for all of the above
+```
 
-`scripts/backtest_report.py` writes `research/experiments/reports/<run>/report.html`: a single
-self-contained page (works offline) with gross vs net equity, itemised costs, drawdown episodes,
-monthly returns, rolling Sharpe/volatility, exposure, a FIFO trade table, tail risk (VaR/CVaR),
-14-day window distributions, benchmarks, a random-entry baseline, statistical context,
-limitations and reproducibility info. Next to it: `summary.json`, `config.json`, `equity.csv`,
-`fills.csv`, `trades.csv`, `open_positions.csv`, `drawdowns.csv`, `random_entry.csv`.
+**The bot:**
 
-`scripts/walk_forward.py` picks parameters on each rolling in-sample window
-and trades them on the next unseen window; the stitched out-of-sample record
-is the honest estimate. `BacktestEngine(rebalance_threshold=...)` skips
-trades smaller than the band (exits always execute) and is searched as a
-parameter, since trading costs dominate at hourly frequency.
+```bash
+.venv/bin/python -m src.main --once     # one cycle
+.venv/bin/python -m src.main            # run continuously (simulated wallet unless live trading is enabled)
+.venv/bin/python -m src.main --status   # decisions, orders, active trading days
+bash deployment/setup_ec2.sh            # on the EC2 instance: packages, clock sync, venv, systemd service
+```
 
-The live bot can also build its own bars from repeated ticker polling
-(`src/data/roostoo_data.py::TickerBarBuilder`).
+Credentials go only in `.env` (see `.env.example`), which is never committed.
 
-## Roadmap
+More operational detail (research app pages, data import, forward testing, safety internals):
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
-- **Prep period (Oct 1–3):** deploy to EC2, run in paper mode, then live with the
-  competition key. Confirm through the bot (never manually) whether Roostoo accepts
-  shorts, and compare Roostoo prices with Binance on recorded tickers.
-- Maker (LIMIT) execution to cut fees from 0.10% to 0.05% where fills allow.
-- Shorting in downtrends, if the competition allows it: the largest remaining lever,
-  given both evaluation periods were falling markets.
-- The holdout split (Jun–Sep 2026) has been used, once (results in `docs/STRATEGY.md`);
-  further strategy changes are judged on train/validation or live results only.
+## 11. Repository map
+
+```
+config/            strategy.yaml (live strategy), config.yaml (API, fees, safety), research.yaml (splits, grids)
+src/strategy/      signals.py — all strategies as pure functions of prices; the live one is trend_vol_target
+src/features/      trend, volatility, momentum, volume indicators (all use past data only)
+src/execution/     client.py (signed Roostoo API), portfolio.py (order planner), broker.py (live and simulated)
+src/bot/           runner.py (the loop), store.py (SQLite audit trail), logging
+src/data/          Binance history, live price history, Roostoo universe and exchange rules, Excel/CSV importer
+backtest/          engine, costs, metrics, analytics, walk-forward, 14-day windows, robustness, reports
+scripts/           research and operations scripts (one per experiment, each documents its own method)
+app/               local research web app (Streamlit)
+deployment/        EC2 setup script and systemd service
+docs/              STRATEGY.md (full research record), DEVELOPMENT.md, COMPETITION_RULES.md, API_NOTES.md, BACKTESTER_PLAN.md
+tests/             ~300 tests, including look-ahead, accounting-reconciliation and live-bot tests
+```
