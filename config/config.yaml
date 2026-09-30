@@ -12,8 +12,11 @@ roostoo:
 
 execution:
   # Competition rule: no HFT. Enforced client-side as a hard floor regardless
-  # of what a strategy asks for.
-  min_seconds_between_orders: 60
+  # of what a strategy asks for. The official rules set no numeric limit.
+  # Was 60s until 2026-09-30: in the live test the second order of a
+  # rebalance waited 60s and filled 12 bps worse than priced; 10s keeps
+  # orders spread out (at most a few per hour) without that timing cost.
+  min_seconds_between_orders: 10
   allow_cancel_all_without_filter: false
   allow_shorting: false  # see docs/API_NOTES.md open question #1
 

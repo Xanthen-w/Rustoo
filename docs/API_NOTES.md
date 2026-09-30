@@ -61,8 +61,9 @@ not just "looks right".
   competition rules (docs/COMPETITION_RULES.md), which only ban HFT /
   market-making / arbitrage and warn that excessive requests get failed
   responses. An earlier note here claimed a 1-trade-per-minute limit; it is
-  not in the official text, but the client keeps a 60s throttle by default
-  as a conservative choice (`execution.min_seconds_between_orders`). The
+  not in the official text. The client keeps a 10s gap between orders
+  (`execution.min_seconds_between_orders`; 60s until 2026-09-30, reduced
+  after a live test showed the wait itself cost 12 bps on an order). The
   client throttles every trade-submitting call (`place_order`, `short_open`,
   `short_close`) defensively. Read-only and idempotent calls treat `429`/`5xx`
   and network errors as retryable; **order-creating calls are never retried** —
@@ -150,7 +151,7 @@ scientific notation such as `1e-05` for small quantities.
    `src/data/roostoo_data.py::TickerBarBuilder`), since Roostoo cannot give us
    history retroactively.
 3. **Exact API rate limit is unpublished.** The client throttles orders to one
-   per `execution.min_seconds_between_orders` (60s default, conservative);
+   per `execution.min_seconds_between_orders` (10s since 2026-09-30);
    that is the single place to adjust it.
 4. **Not every pair in `exchangeInfo` has ticker data.** Verified live on
    2026-09-22: `exchangeInfo` listed 88 tradable pairs, but the

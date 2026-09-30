@@ -48,7 +48,8 @@ changes design decisions. The organizers' published text is authoritative.
   on the server side (docs/API_NOTES.md open question #1). This stays off
   (`execution.allow_shorting: false`) until the bot itself confirms it works during the prep period.
 - **Rate limit:** the official text sets no numeric limit. `execution.min_seconds_between_orders`
-  stays a conservative client-side throttle.
+  is a client-side throttle, 10 s between orders since 2026-09-30 (was 60 s). A rebalance places
+  at most a few orders, so this stays far from high-frequency trading.
 
 ## Organizer clarifications (received 2026-09-28)
 
