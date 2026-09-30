@@ -36,7 +36,9 @@ trend_vol_target:
   band: 0.03           # hysteresis around the EMA
   vol_lookback: 720    # 30 days
   target_vol: 0.5      # annualized, split across assets
-  min_exposure: 0.15   # share of vol-target size kept when out of trend
+  min_exposure: 0.05   # share of vol-target size kept when out of trend (was 0.15 until 2026-09-30;
+                       # reduced after the organizers defined an active day as >= 1 trade, see
+                       # scripts/floor_research.py and docs/STRATEGY.md "Floor size")
 
 # Researcher's hypothesis for the live strategy (shown in reports as a
 # hypothesis, separate from the evidence).

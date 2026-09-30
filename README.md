@@ -11,7 +11,7 @@ Composite Score = 0.4 * Sortino + 0.3 * Sharpe + 0.3 * Calmar
 — not raw return. See `backtest/metrics.py::composite_score`.
 
 **Live strategy:** risk-managed BTC/ETH trend core (40-day EMA trend filter with
-hysteresis, volatility-targeted sizing, 15% exposure floor, exact rebalance
+hysteresis, volatility-targeted sizing, 5% exposure floor, exact rebalance
 every 6 hours). Rationale and evidence: [`docs/STRATEGY.md`](docs/STRATEGY.md).
 Competition constraints: [`docs/COMPETITION_RULES.md`](docs/COMPETITION_RULES.md).
 

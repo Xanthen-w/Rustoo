@@ -10,7 +10,7 @@ Every hour, for each of BTC and ETH:
 2. **Volatility-targeted size:** each asset gets a weight of `(0.5 / 2) / realized_vol_30d`, i.e. an equal
    share of a 50% annualized volatility budget, so a calmer asset gets a bigger position. Total exposure
    is capped at 100%, with no leverage.
-3. **Exposure:** full size while in trend, 15% of it while out of trend (`min_exposure`). The rest is cash.
+3. **Exposure:** full size while in trend, 5% of it while out of trend (`min_exposure`). The rest is cash.
 4. **Execution:** trade only when an asset's weight has drifted at least 5% from target, except
    **every 6 hours (00:00, 06:00, 12:00, 18:00 UTC)**, when the portfolio is rebalanced exactly to target.
 
@@ -25,7 +25,7 @@ requires trades on at least 8 days (`docs/COMPETITION_RULES.md`). So the design 
   downtrends and sizing by volatility both cut the worst outcomes.
 - **Low cost.** At 0.1% per taker trade, every hourly strategy we tested lost more to fees than its
   signal earned (see below). A 40-day trend changes state rarely, and the 5% band suppresses small trades.
-- **Daily activity from the strategy's own logic.** The 15% floor means there is always a position,
+- **Daily activity from the strategy's own logic.** The 5% floor means there is always a position,
   and the exact rebalances every 6 hours trade it back to target (about 8 fills a day).
 
 ## Evidence
@@ -196,6 +196,12 @@ fill in every 14-day window, beats live on train, and isn't worse on validation)
 
 2%, 5% and 10% all pass the rule; the rule picks the smallest (2%). The gains are modest, as the
 corrected attribution predicts, and smaller floors mean smaller daily trades.
+
+**Decision (2026-09-30): 5%.** It also passes the rule and keeps nearly all of the gain, but its
+smallest daily trades are 2–3× larger than at 2% ($29–43 vs $12–17 at the 10th percentile). Trade
+size was named as a criterion before the test ran, because the organizers want the trade history to
+look like the declared strategy, not like token trades made to satisfy the activity rule.
+Performance tables earlier in this document were computed with the previous 15% floor.
 
 ## Honest limitations
 

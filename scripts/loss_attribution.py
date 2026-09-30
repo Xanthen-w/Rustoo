@@ -77,7 +77,7 @@ def main() -> int:
 
         rows = []
         for a in p["assets"]:
-            for st, label in ((1.0, "in trend (full size)"), (0.0, "out of trend (15% floor)")):
+            for st, label in ((1.0, "in trend (full size)"), (0.0, f"out of trend ({p['min_exposure']:.0%} floor)")):
                 m = state[a] == st
                 rows.append({"coin": a.split("/")[0], "state": label, "share_of_time_%": 100 * m.mean(),
                              "avg_weight_%": 100 * r.weights_history[a][m].mean(), "P&L_$": contrib[a][m].sum()})
