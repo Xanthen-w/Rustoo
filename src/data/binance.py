@@ -107,21 +107,15 @@ class BinanceArchiveDownloader:
         self.session = session or requests.Session()
         self.timeout_seconds = timeout_seconds
 
-    def _archive_urls(self, symbol: str, start: date, end: date) -> list[tuple[str, Path]]:
-        """Monthly archives for every whole month in [start, end] that has
-        ended before `end`'s month, daily archives for the remainder."""
+    def _monthly_item(self, symbol: str, month: date) -> tuple[str, Path]:
+        name = f"{symbol}-{self.interval}-{month:%Y-%m}.zip"
+        return (f"{ARCHIVE_BASE_URL}/monthly/klines/{symbol}/{self.interval}/{name}",
+                self.cache_dir / symbol / self.interval / "monthly" / name)
+
+    def _daily_items(self, symbol: str, first: date, last: date) -> list[tuple[str, Path]]:
         items: list[tuple[str, Path]] = []
-        month = date(start.year, start.month, 1)
-        end_month = date(end.year, end.month, 1)
-        while month < end_month:
-            name = f"{symbol}-{self.interval}-{month:%Y-%m}.zip"
-            items.append(
-                (f"{ARCHIVE_BASE_URL}/monthly/klines/{symbol}/{self.interval}/{name}",
-                 self.cache_dir / symbol / self.interval / "monthly" / name)
-            )
-            month = date(month.year + (month.month == 12), month.month % 12 + 1, 1)
-        day = max(end_month, start)
-        while day <= end:
+        day = first
+        while day <= last:
             name = f"{symbol}-{self.interval}-{day:%Y-%m-%d}.zip"
             items.append(
                 (f"{ARCHIVE_BASE_URL}/daily/klines/{symbol}/{self.interval}/{name}",
@@ -129,6 +123,17 @@ class BinanceArchiveDownloader:
             )
             day += timedelta(days=1)
         return items
+
+    def _archive_urls(self, symbol: str, start: date, end: date) -> list[tuple[str, Path]]:
+        """Monthly archives for every whole month in [start, end] that has
+        ended before `end`'s month, daily archives for the remainder."""
+        items: list[tuple[str, Path]] = []
+        month = date(start.year, start.month, 1)
+        end_month = date(end.year, end.month, 1)
+        while month < end_month:
+            items.append(self._monthly_item(symbol, month))
+            month = date(month.year + (month.month == 12), month.month % 12 + 1, 1)
+        return items + self._daily_items(symbol, max(end_month, start), end)
 
     def _fetch(self, url: str, path: Path) -> str:
         """Returns 'cached', 'downloaded' or 'missing' (404: the symbol
@@ -149,8 +154,17 @@ class BinanceArchiveDownloader:
         symbol = roostoo_to_binance_symbol(pair)
         counts = {"cached": 0, "downloaded": 0, "missing": 0}
         frames = []
-        for url, path in self._archive_urls(symbol, start, end):
+        items = self._archive_urls(symbol, start, end)
+        # Binance publishes a month's archive a few days into the next month.
+        # Until then the month just ended is only available as daily files.
+        last_month_end = date(end.year, end.month, 1) - timedelta(days=1)
+        last_month = self._monthly_item(symbol, date(last_month_end.year, last_month_end.month, 1))
+        while items:
+            url, path = items.pop(0)
             status = self._fetch(url, path)
+            if status == "missing" and (url, path) == last_month:
+                items = self._daily_items(symbol, max(last_month_end.replace(day=1), start), last_month_end) + items
+                continue
             counts[status] += 1
             if status == "missing":
                 continue

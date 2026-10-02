@@ -95,6 +95,24 @@ def test_downloader_merges_monthly_and_daily_and_caches(tmp_path):
     assert all("2025-01-02" in url for url in session.requested)  # only the missing file is retried
 
 
+def test_downloader_uses_daily_files_while_last_months_archive_is_unpublished(tmp_path):
+    dec = int(pd.Timestamp("2024-12-31 23:55", tz="UTC").timestamp() * 1000)
+    jan = int(pd.Timestamp("2025-01-01 00:00", tz="UTC").timestamp() * 1_000_000)
+    session = _ArchiveSession({
+        "BTCUSDT-5m-2024-12-31.zip": _kline_row(dec, 100.0),  # no 2024-12 monthly archive yet
+        "BTCUSDT-5m-2025-01-01.zip": _kline_row(jan, 101.0),
+    })
+    dl = BinanceArchiveDownloader(tmp_path / "cache", tmp_path / "out", "5m", session=session)
+    report = dl.download_pair("BTC/USD", date(2024, 11, 15), date(2025, 1, 1))
+
+    assert report.rows == 2
+    assert report.files_downloaded == 2
+    # Only the month just ended falls back to daily files: an older missing
+    # month means the symbol wasn't trading, not a late archive.
+    assert not any("2024-11-" in url for url in session.requested)
+    assert sum("2024-12-" in url for url in session.requested) == 31
+
+
 def _write_parquet(root, pair, index, close):
     root.mkdir(parents=True, exist_ok=True)
     df = pd.DataFrame({"open": close, "high": close, "low": close, "close": close, "volume": 1.0}, index=index)
